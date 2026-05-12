@@ -23,6 +23,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+import netCDF4 as nc4
+
 from config import RAW_PARAMS_1D, RAW_PARAMS_2D
 
 
@@ -37,6 +39,9 @@ def save_raw_orbits(orbites: list[dict], filepath: str) -> None:
     iwp...) et 2D (temperature, iwc... avec dimension height).
     Les traces de longueurs différentes sont alignées par padding NaN.
 
+    Écriture orbite par orbite (disk-backed) pour éviter d'allouer
+    l'intégralité du volume en RAM.
+
     Parameters
     ----------
     orbites : list[dict]
@@ -47,89 +52,90 @@ def save_raw_orbits(orbites: list[dict], filepath: str) -> None:
     """
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
 
-    # Longueur max des traces (pour le padding)
-    n_max  = max(len(orb["lat"]) for orb in orbites)
-    n_orb  = len(orbites)
-
-    # Hauteur max pour les paramètres 2D
+    # --- Première passe : méta + dimensions (pas de tableaux data) ---
+    n_orb = len(orbites)
+    n_max = max(len(orb["lat"]) for orb in orbites)
     h_max = 0
-    for orb in orbites:
-        arr = orb.get("height")
-        if arr is not None and arr.ndim == 2:
-            h_max = max(h_max, arr.shape[1])
-
-    print(f"[raw_nc] {n_orb} orbites | n_max={n_max} pts | h_max={h_max} niveaux")
-
-    # --- Construire les arrays paddes ---
     orbit_ids  = []
     start_days = []
     frames     = []
     orbits_num = []
 
-    data_1d = {p: np.full((n_orb, n_max), np.nan) for p in RAW_PARAMS_1D}
-    data_2d = {p: np.full((n_orb, n_max, h_max), np.nan) for p in RAW_PARAMS_2D}
-
-    for i, orb in enumerate(orbites):
-        # Métadonnées
+    for orb in orbites:
+        arr = orb.get("height")
+        if arr is not None and np.asarray(arr).ndim == 2:
+            h_max = max(h_max, np.asarray(arr).shape[1])
         orbit_ids.append(_orbit_id(orb))
         start_days.append(_start_day(orb))
         frames.append(_decode(orb.get("frame_id", b"?")))
         orbits_num.append(_decode(orb.get("nom_orbite", b"?")))
 
-        n = len(orb["lat"])
+    h_dim = h_max if h_max > 0 else 1
+    print(f"[raw_nc] {n_orb} orbites | n_max={n_max} pts | h_max={h_max} niveaux")
 
-        # Paramètres 1D
-        for p in RAW_PARAMS_1D:
-            arr = orb.get(p)
-            if arr is not None:
-                arr = np.asarray(arr, dtype=float).ravel()
-                data_1d[p][i, :len(arr)] = arr
-
-        # Paramètres 2D
-        for p in RAW_PARAMS_2D:
-            arr = orb.get(p)
-            if arr is not None:
-                arr = np.asarray(arr, dtype=float)
-                if arr.ndim == 2:
-                    nr, nc = arr.shape
-                    data_2d[p][i, :nr, :nc] = arr
-                elif arr.ndim == 1:
-                    # height 1D (rare) → broadcast
-                    data_2d[p][i, :len(arr), 0] = arr
-
-    # --- Construire le Dataset ---
-    ds = xr.Dataset(
-        coords={
-            "orbite":  ("orbite",  orbit_ids),
-            "point":   ("point",   np.arange(n_max)),
-            "level":   ("level",   np.arange(h_max)),
-        },
-        attrs={
-            "title":       "EarthCARE ACM_CLP_2B raw orbits",
-            "n_orbits":    n_orb,
-            "date_start":  start_days[0]  if start_days else "",
-            "date_end":    start_days[-1] if start_days else "",
-            "conventions": "CF-1.8",
-        },
-    )
-
-    # Variables de métadonnées
-    ds["start_day"]  = ("orbite", start_days)
-    ds["frame_id"]   = ("orbite", frames)
-    ds["nom_orbite"] = ("orbite", orbits_num)
-
-    # Variables 1D
-    for p in RAW_PARAMS_1D:
-        ds[p] = (["orbite", "point"], data_1d[p])
-
-    # Variables 2D
-    for p in RAW_PARAMS_2D:
-        ds[p] = (["orbite", "point", "level"], data_2d[p])
-
-    # Remove any existing file first — HDF5 can error when overwriting
-    # a file that was left open/corrupted by a previous failed run.
+    # --- Créer le fichier et ses variables (disk-backed, pas de RAM) ---
     Path(filepath).unlink(missing_ok=True)
-    ds.to_netcdf(filepath, mode="w")
+
+    with nc4.Dataset(filepath, "w", format="NETCDF4") as root:
+        root.title       = "EarthCARE ACM_CLP_2B raw orbits"
+        root.n_orbits    = n_orb
+        root.date_start  = start_days[0]  if start_days else ""
+        root.date_end    = start_days[-1] if start_days else ""
+        root.conventions = "CF-1.8"
+
+        root.createDimension("orbite", n_orb)
+        root.createDimension("point",  n_max)
+        root.createDimension("level",  h_dim)
+
+        # Coordonnées scalaires
+        v_point = root.createVariable("point", "i4", ("point",))
+        v_level = root.createVariable("level", "i4", ("level",))
+        v_point[:] = np.arange(n_max)
+        v_level[:] = np.arange(h_dim)
+
+        # Métadonnées par orbite (strings)
+        v_orbite    = root.createVariable("orbite",     str, ("orbite",))
+        v_start_day = root.createVariable("start_day",  str, ("orbite",))
+        v_frame_id  = root.createVariable("frame_id",   str, ("orbite",))
+        v_nom_orb   = root.createVariable("nom_orbite", str, ("orbite",))
+        v_orbite[:]    = np.array(orbit_ids,  dtype=object)
+        v_start_day[:] = np.array(start_days, dtype=object)
+        v_frame_id[:]  = np.array(frames,     dtype=object)
+        v_nom_orb[:]   = np.array(orbits_num, dtype=object)
+
+        # Variables data pré-créées (fill_value=NaN, disk-backed)
+        vars_1d = {
+            p: root.createVariable(p, "f4", ("orbite", "point"),
+                                   fill_value=np.nan, zlib=True, complevel=4)
+            for p in RAW_PARAMS_1D
+        }
+        vars_2d = {
+            p: root.createVariable(p, "f4", ("orbite", "point", "level"),
+                                   fill_value=np.nan, zlib=True, complevel=4)
+            for p in RAW_PARAMS_2D
+        }
+
+        # --- Deuxième passe : écriture orbite par orbite ---
+        for i, orb in enumerate(orbites):
+            for p in RAW_PARAMS_1D:
+                arr = orb.get(p)
+                if arr is not None:
+                    arr = np.asarray(arr, dtype="f4").ravel()
+                    vars_1d[p][i, :len(arr)] = arr
+
+            for p in RAW_PARAMS_2D:
+                arr = orb.get(p)
+                if arr is not None:
+                    arr = np.asarray(arr, dtype="f4")
+                    if arr.ndim == 2:
+                        nr, nc_ = arr.shape
+                        vars_2d[p][i, :nr, :nc_] = arr
+                    elif arr.ndim == 1:
+                        vars_2d[p][i, :len(arr), 0] = arr
+
+            if (i + 1) % 50 == 0 or (i + 1) == n_orb:
+                print(f"[raw_nc] {i+1}/{n_orb} orbites écrites…")
+
     size_mb = Path(filepath).stat().st_size / 1e6
     print(f"[raw_nc] Sauvegardé → {filepath}  ({size_mb:.1f} MB)")
     if start_days:
