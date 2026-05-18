@@ -108,21 +108,36 @@ def _orbit_id(data: dict) -> str:
     return f"{num}{fid}_{date_str}"
 
 def prepare_multi_orbits(raw_orbits: list[dict]) -> list[dict]:
-    
     result = []
     for data in raw_orbits:
-        t0 = data.get("start_time")
-    
+        t0   = data.get("start_time")
         elev = data.get("surface_elevation")
+
+        def _arr(key):
+            v = data.get(key)
+            return np.asarray(v, dtype=float) if v is not None else None
+
         result.append({
-            "orbit_id": _orbit_id(data),
-            "nom_orbite": str(data.get("nom_orbite", b"unknown")).strip(),
-            "start_day": t0.decode().replace("UTC=", "").replace("Z", ""),
-            "lat": np.asarray(data["lat"], dtype=float),
-            "lon": np.asarray(data["lon"], dtype=float),
-            "lwp": mask_negative(data["lwp"]),
-            "iwp": mask_negative(data["iwp"]),
+            # Métadonnées — conservées en bytes pour compatibilité
+            # avec save_raw_orbits() et GridAccumulator.accumulate()
+            "orbit_id":   _orbit_id(data),
+            "nom_orbite": data.get("nom_orbite", b"unknown"),
+            "frame_id":   data.get("frame_id",   b"?"),
+            "start_time": t0,
+            "start_day":  t0.decode().replace("UTC=", "").replace("Z", "") if t0 else "",
+            # Champs 1D
+            "lat":               np.asarray(data["lat"], dtype=float),
+            "lon":               np.asarray(data["lon"], dtype=float),
+            "time":              _arr("time"),
+            "lwp":               mask_negative(data["lwp"]),
+            "iwp":               mask_negative(data["iwp"]),
             "surface_elevation": np.asarray(elev, dtype=float) if elev is not None else None,
+            # Champs 2D
+            "iwc":          _arr("iwc"),
+            "lwc":          _arr("lwc"),
+            "temperature":  _arr("temperature"),
+            "particle_type":_arr("particle_type"),
+            "height":       _arr("height"),
         })
     return result
 
