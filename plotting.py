@@ -116,6 +116,33 @@ def _fig_header(t_utc_start, t_utc_end, orbit_id=None):
         f"From : {t_utc_start} to {t_utc_end}\norbit: {orbit_id}")
 
 
+def _add_orbit_inset(fig, ax_main, d, t_min, t_max):
+    """Inset polaire Antarctique dans le coin sup-droit de ax_main."""
+    bb   = ax_main.get_position()
+    w, h = 0.18, 0.34
+    ax_i = fig.add_axes(
+        [bb.x1 - w - 0.01, bb.y1 - h, w, h],
+        projection=ccrs.SouthPolarStereo())
+    ax_i.set_extent([-180, 180, -90, -60], ccrs.PlateCarree())
+    ax_i.add_feature(cfeature.LAND,      facecolor="lightgray")
+    ax_i.add_feature(cfeature.OCEAN,     facecolor="aliceblue")
+    ax_i.add_feature(cfeature.COASTLINE, linewidth=0.4)
+    ax_i.gridlines(alpha=0.25, linewidth=0.4)
+
+    theta = np.linspace(0, 2 * np.pi, 100)
+    verts = np.vstack([np.sin(theta), np.cos(theta)]).T
+    ax_i.set_boundary(mpath.Path(verts * 0.5 + [0.5, 0.5]),
+                      transform=ax_i.transAxes)
+
+    mask = (d["t"] >= t_min) & (d["t"] <= t_max)
+    ax_i.scatter(d["lon"][mask], d["lat"][mask],
+                 c="red", s=2, transform=ccrs.PlateCarree(), zorder=5)
+
+    _add_distance_circles(ax_i)
+    ax_i.plot(LON_REF, LAT_REF, color="#FFA500", marker="*", markersize=5,
+              linestyle="none", transform=ccrs.PlateCarree(), zorder=10)
+
+
 def _resolve_grid_range(grid, day, d1, d2):
     """Retourne (means, stds, n_orbits, label) selon les arguments fournis."""
     if day is not None:
@@ -133,7 +160,8 @@ def _resolve_grid_range(grid, day, d1, d2):
 # PLOTS PROFIL UNIQUE (orbite)
 # ============================================================
 
-def plot_cloud_classification(d: dict, t_min: int, t_max: int) -> None:
+def plot_cloud_classification(d: dict, t_min: int, t_max: int,
+                              scatter: bool = False) -> None:
     fig, (ax1, ax_leg) = plt.subplots(
         2, 1, figsize=(16, 7),
         gridspec_kw={"height_ratios": [5, 1], "hspace": 0.15})
@@ -156,10 +184,13 @@ def plot_cloud_classification(d: dict, t_min: int, t_max: int) -> None:
     _add_time_labels(ax1, d["t"], d["t0_utc"], d["local_times"],
                      t_min, t_max, y_utc=-0.15, y_local=-0.23)
     _add_particle_legend(ax_leg, d["present_type"])
+    if scatter:
+        _add_orbit_inset(fig, ax1, d, t_min, t_max)
     plt.show()
 
 
-def plot_temperature(d: dict, t_min: int, t_max: int) -> None:
+def plot_temperature(d: dict, t_min: int, t_max: int,
+                     scatter: bool = False) -> None:
     fig, ax = plt.subplots(figsize=(16, 5))
     fig.patch.set_facecolor("white")
 
@@ -172,6 +203,8 @@ def plot_temperature(d: dict, t_min: int, t_max: int) -> None:
     ax.set_title("Temperature", fontsize=13, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
     ax.set_ylim(3000, 6000)
     ax.set_xlim(t_min, t_max)
+    if scatter:
+        _add_orbit_inset(fig, ax, d, t_min, t_max)
     plt.show()
 
 
@@ -191,7 +224,8 @@ def _add_cloud_contours(ax, T2D, HGT, particle_type_raw, present_types,
                    linewidths=linewidth, alpha=alpha)
 
 
-def plot_temperature_and_classification(d: dict, t_min: int, t_max: int) -> None:
+def plot_temperature_and_classification(d: dict, t_min: int, t_max: int,
+                                        scatter: bool = False) -> None:
     fig, (ax, ax_leg) = plt.subplots(
         2, 1, figsize=(16, 7),
         gridspec_kw={"height_ratios": [5, 1], "hspace": 0.154})
@@ -214,12 +248,15 @@ def plot_temperature_and_classification(d: dict, t_min: int, t_max: int) -> None
 
     _add_time_labels(ax, d["t"], d["t0_utc"], d["local_times"],
                      t_min, t_max, y_utc=-0.20, y_local=-0.25)
+    if scatter:
+        _add_orbit_inset(fig, ax, d, t_min, t_max)
     plt.show()
 
 
 def _plot_water_content_2d(d: dict, data_key: str, title: str, cbar_label: str,
                             t_min: int, t_max: int,
-                            vmin=None, vmax=None, extra_twin=None) -> None:
+                            vmin=None, vmax=None, extra_twin=None,
+                            scatter: bool = False) -> None:
     fig, (ax1, ax_leg) = plt.subplots(
         2, 1, figsize=(16, 7),
         gridspec_kw={"height_ratios": [5, 1], "hspace": 0.15})
@@ -255,17 +292,21 @@ def _plot_water_content_2d(d: dict, data_key: str, title: str, cbar_label: str,
     ax_leg.axis("off")
     cb = fig.colorbar(c1, ax=ax_leg, orientation="horizontal", fraction=0.5, pad=0.1)
     cb.set_label(cbar_label, fontsize=9)
+    if scatter:
+        _add_orbit_inset(fig, ax1, d, t_min, t_max)
     plt.show()
 
 
-def plot_ice_water_content(d: dict, t_min: int, t_max: int) -> None:
+def plot_ice_water_content(d: dict, t_min: int, t_max: int,
+                           scatter: bool = False) -> None:
     _plot_water_content_2d(d, "iwc_plot", "Ice water content", "IWC /($g/m³$)",
-                            t_min, t_max, vmin=0.0, vmax=0.20)
+                            t_min, t_max, vmin=0.0, vmax=0.20, scatter=scatter)
 
 
-def plot_liquid_water_content(d: dict, t_min: int, t_max: int) -> None:
+def plot_liquid_water_content(d: dict, t_min: int, t_max: int,
+                               scatter: bool = False) -> None:
     _plot_water_content_2d(d, "lwc_plot", "Liquid water content", "LWC / ($g/m³$)",
-                            t_min, t_max)
+                            t_min, t_max, scatter=scatter)
 
 
 def plot_lat_lon(d: dict, t_min: int, t_max: int) -> None:
@@ -305,7 +346,8 @@ def plot_distance(d: dict) -> None:
     plt.show()
 
 
-def plot_water_paths(d: dict, t_min: int, t_max: int) -> None:
+def plot_water_paths(d: dict, t_min: int, t_max: int,
+                     scatter: bool = False) -> None:
     fig, ax_lwp = plt.subplots(figsize=(16, 5))
     fig.patch.set_facecolor("white")
 
@@ -327,6 +369,8 @@ def plot_water_paths(d: dict, t_min: int, t_max: int) -> None:
     ax_lwp.set_xlabel("Time / s", fontsize=9)
     ax_lwp.legend([line1, line2], [line1.get_label(), line2.get_label()],
                    loc="upper right", fontsize=8)
+    if scatter:
+        _add_orbit_inset(fig, ax_lwp, d, t_min, t_max)
     plt.show()
 
 
