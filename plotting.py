@@ -116,13 +116,8 @@ def _fig_header(t_utc_start, t_utc_end, orbit_id=None):
         f"From : {t_utc_start} to {t_utc_end}\norbit: {orbit_id}")
 
 
-def _add_orbit_inset(fig, ax_main, d, t_min, t_max):
-    """Inset polaire Antarctique dans le coin sup-droit de ax_main."""
-    bb   = ax_main.get_position()
-    w, h = 0.18, 0.34
-    ax_i = fig.add_axes(
-        [bb.x1 - w - 0.01, bb.y1 - h, w, h],
-        projection=ccrs.SouthPolarStereo())
+def _fill_orbit_inset(ax_i, d, t_min, t_max):
+    """Remplit un axes SouthPolarStereo avec la position de l'orbite."""
     ax_i.set_extent([-180, 180, -90, -60], ccrs.PlateCarree())
     ax_i.add_feature(cfeature.LAND,      facecolor="lightgray")
     ax_i.add_feature(cfeature.OCEAN,     facecolor="aliceblue")
@@ -141,6 +136,7 @@ def _add_orbit_inset(fig, ax_main, d, t_min, t_max):
     _add_distance_circles(ax_i)
     ax_i.plot(LON_REF, LAT_REF, color="#FFA500", marker="*", markersize=5,
               linestyle="none", transform=ccrs.PlateCarree(), zorder=10)
+    ax_i.set_title("Orbit position", fontsize=7, color=TITLE_COLOR)
 
 
 def _resolve_grid_range(grid, day, d1, d2):
@@ -162,9 +158,19 @@ def _resolve_grid_range(grid, day, d1, d2):
 
 def plot_cloud_classification(d: dict, t_min: int, t_max: int,
                               scatter: bool = False) -> None:
-    fig, (ax1, ax_leg) = plt.subplots(
-        2, 1, figsize=(16, 7),
-        gridspec_kw={"height_ratios": [5, 1], "hspace": 0.15})
+    if scatter:
+        fig = plt.figure(figsize=(20, 7))
+        gs  = fig.add_gridspec(2, 2, height_ratios=[5, 1],
+                               width_ratios=[4, 1], hspace=0.15, wspace=0.35)
+        ax1    = fig.add_subplot(gs[0, 0])
+        ax_leg = fig.add_subplot(gs[1, 0])
+        ax_map = fig.add_subplot(gs[:, 1], projection=ccrs.SouthPolarStereo())
+        _fill_orbit_inset(ax_map, d, t_min, t_max)
+    else:
+        fig, (ax1, ax_leg) = plt.subplots(
+            2, 1, figsize=(16, 7),
+            gridspec_kw={"height_ratios": [5, 1], "hspace": 0.15})
+
     fig.patch.set_facecolor("white")
     fig.text(0.02, 0.98, _fig_header(d["t_utc_start"], d["t_utc_end"]),
              fontsize=7, va="top")
@@ -184,14 +190,20 @@ def plot_cloud_classification(d: dict, t_min: int, t_max: int,
     _add_time_labels(ax1, d["t"], d["t0_utc"], d["local_times"],
                      t_min, t_max, y_utc=-0.15, y_local=-0.23)
     _add_particle_legend(ax_leg, d["present_type"])
-    if scatter:
-        _add_orbit_inset(fig, ax1, d, t_min, t_max)
     plt.show()
 
 
 def plot_temperature(d: dict, t_min: int, t_max: int,
                      scatter: bool = False) -> None:
-    fig, ax = plt.subplots(figsize=(16, 5))
+    if scatter:
+        fig = plt.figure(figsize=(20, 5))
+        gs  = fig.add_gridspec(1, 2, width_ratios=[4, 1], wspace=0.35)
+        ax     = fig.add_subplot(gs[0, 0])
+        ax_map = fig.add_subplot(gs[0, 1], projection=ccrs.SouthPolarStereo())
+        _fill_orbit_inset(ax_map, d, t_min, t_max)
+    else:
+        fig, ax = plt.subplots(figsize=(16, 5))
+
     fig.patch.set_facecolor("white")
 
     c  = ax.pcolormesh(d["T2D"], d["HGT"], np.ma.masked_invalid(d["temp_c"]),
@@ -203,8 +215,6 @@ def plot_temperature(d: dict, t_min: int, t_max: int,
     ax.set_title("Temperature", fontsize=13, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
     ax.set_ylim(3000, 6000)
     ax.set_xlim(t_min, t_max)
-    if scatter:
-        _add_orbit_inset(fig, ax, d, t_min, t_max)
     plt.show()
 
 
@@ -226,9 +236,19 @@ def _add_cloud_contours(ax, T2D, HGT, particle_type_raw, present_types,
 
 def plot_temperature_and_classification(d: dict, t_min: int, t_max: int,
                                         scatter: bool = False) -> None:
-    fig, (ax, ax_leg) = plt.subplots(
-        2, 1, figsize=(16, 7),
-        gridspec_kw={"height_ratios": [5, 1], "hspace": 0.154})
+    if scatter:
+        fig = plt.figure(figsize=(20, 7))
+        gs  = fig.add_gridspec(2, 2, height_ratios=[5, 1],
+                               width_ratios=[4, 1], hspace=0.154, wspace=0.35)
+        ax     = fig.add_subplot(gs[0, 0])
+        ax_leg = fig.add_subplot(gs[1, 0])
+        ax_map = fig.add_subplot(gs[:, 1], projection=ccrs.SouthPolarStereo())
+        _fill_orbit_inset(ax_map, d, t_min, t_max)
+    else:
+        fig, (ax, ax_leg) = plt.subplots(
+            2, 1, figsize=(16, 7),
+            gridspec_kw={"height_ratios": [5, 1], "hspace": 0.154})
+
     fig.patch.set_facecolor("white")
 
     c  = ax.pcolormesh(d["T2D"], d["HGT"], np.ma.masked_invalid(d["temp_c"]),
@@ -248,8 +268,6 @@ def plot_temperature_and_classification(d: dict, t_min: int, t_max: int,
 
     _add_time_labels(ax, d["t"], d["t0_utc"], d["local_times"],
                      t_min, t_max, y_utc=-0.20, y_local=-0.25)
-    if scatter:
-        _add_orbit_inset(fig, ax, d, t_min, t_max)
     plt.show()
 
 
@@ -257,9 +275,19 @@ def _plot_water_content_2d(d: dict, data_key: str, title: str, cbar_label: str,
                             t_min: int, t_max: int,
                             vmin=None, vmax=None, extra_twin=None,
                             scatter: bool = False) -> None:
-    fig, (ax1, ax_leg) = plt.subplots(
-        2, 1, figsize=(16, 7),
-        gridspec_kw={"height_ratios": [5, 1], "hspace": 0.15})
+    if scatter:
+        fig = plt.figure(figsize=(20, 7))
+        gs  = fig.add_gridspec(2, 2, height_ratios=[5, 1],
+                               width_ratios=[4, 1], hspace=0.15, wspace=0.35)
+        ax1    = fig.add_subplot(gs[0, 0])
+        ax_leg = fig.add_subplot(gs[1, 0])
+        ax_map = fig.add_subplot(gs[:, 1], projection=ccrs.SouthPolarStereo())
+        _fill_orbit_inset(ax_map, d, t_min, t_max)
+    else:
+        fig, (ax1, ax_leg) = plt.subplots(
+            2, 1, figsize=(16, 7),
+            gridspec_kw={"height_ratios": [5, 1], "hspace": 0.15})
+
     fig.patch.set_facecolor("white")
 
     kwargs = dict(cmap="rainbow", shading="auto")
@@ -292,8 +320,6 @@ def _plot_water_content_2d(d: dict, data_key: str, title: str, cbar_label: str,
     ax_leg.axis("off")
     cb = fig.colorbar(c1, ax=ax_leg, orientation="horizontal", fraction=0.5, pad=0.1)
     cb.set_label(cbar_label, fontsize=9)
-    if scatter:
-        _add_orbit_inset(fig, ax1, d, t_min, t_max)
     plt.show()
 
 
@@ -348,7 +374,15 @@ def plot_distance(d: dict) -> None:
 
 def plot_water_paths(d: dict, t_min: int, t_max: int,
                      scatter: bool = False) -> None:
-    fig, ax_lwp = plt.subplots(figsize=(16, 5))
+    if scatter:
+        fig = plt.figure(figsize=(20, 5))
+        gs  = fig.add_gridspec(1, 2, width_ratios=[4, 1], wspace=0.35)
+        ax_lwp = fig.add_subplot(gs[0, 0])
+        ax_map = fig.add_subplot(gs[0, 1], projection=ccrs.SouthPolarStereo())
+        _fill_orbit_inset(ax_map, d, t_min, t_max)
+    else:
+        fig, ax_lwp = plt.subplots(figsize=(16, 5))
+
     fig.patch.set_facecolor("white")
 
     line1, = ax_lwp.plot(d["t"], d["lwp_plot"], color="red",
@@ -369,8 +403,6 @@ def plot_water_paths(d: dict, t_min: int, t_max: int,
     ax_lwp.set_xlabel("Time / s", fontsize=9)
     ax_lwp.legend([line1, line2], [line1.get_label(), line2.get_label()],
                    loc="upper right", fontsize=8)
-    if scatter:
-        _add_orbit_inset(fig, ax_lwp, d, t_min, t_max)
     plt.show()
 
 
