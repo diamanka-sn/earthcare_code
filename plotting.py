@@ -8,11 +8,13 @@ import matplotlib.patches as mpatches
 import matplotlib.path as mpath
 import matplotlib.cm as cm
 
+import matplotlib.dates as mdates
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cartopy.geodesic as cgeo
 import pandas as pd
 from gridding import GridAccumulator
+from processing import haversine
 from config import (TITLE_COLOR, TITLE_WEIGHT, PARTICLE_COLORS, PARTICLE_LABEL,
     CIRCLES_CONFIG, LON_REF, LAT_REF, ORBIT_FRAME, DATE_END, DATE_START)
 
@@ -552,6 +554,33 @@ def plot_grid_std(grid, param: str = "lwp",
                     label=label, n_orbits=n_orbits)
 
 
+def plot_grid_standard_error(grid, param: str = "lwp",
+                             cbar_label: str | None = None,
+                             vmin: float = 0, vmax: float | None = None,
+                             day: str | None = None,
+                             d1: str | None = None,
+                             d2: str | None = None) -> None:
+    """Carte polaire de l'erreur standard (std / √n) par cellule de grille."""
+    _, stds, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
+
+    counts = _get_counts(grid, day, d1, d2)
+
+    if param not in stds:
+        raise KeyError(f"Paramètre '{param}' absent. Disponibles : {list(stds)}")
+
+    n = counts[param].astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        std_err = np.where(n > 0, stds[param] / np.sqrt(n), np.nan)
+
+    _polar_grid_map(
+        grid.lon_bins, grid.lat_bins, std_err,
+        title=f"{param.upper()} — Erreur standard (std / √n)  |  {label}",
+        cbar_label=cbar_label or f"Erreur standard {param.upper()} (g/m²)",
+        cmap="rainbow", vmin=vmin, vmax=vmax,
+        label=label, n_orbits=n_orbits,
+    )
+
+
 def plot_grid_results(grid: GridAccumulator, day: str | None = None,
                       d1: str | None = None, d2: str | None = None):
     means, stds, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
@@ -570,6 +599,74 @@ def plot_grid_results(grid: GridAccumulator, day: str | None = None,
     fg.mean     = lambda: means
     fg.std      = lambda: stds
     return fg
+
+
+def plot_grid_mean_std_se(grid, param: str = "lwp",
+                          cbar_label: str | None = None,
+                          vmin_mean=None, vmax_mean=None,
+                          vmin_std=None,  vmax_std=None,
+                          vmin_se=None,   vmax_se=None,
+                          vmin_n=None,    vmax_n=None,
+                          day: str | None = None,
+                          d1: str | None = None,
+                          d2: str | None = None) -> None:
+    """Affiche côte à côte la moyenne, l'écart-type, l'erreur sur la moyenne et le nombre d'observations."""
+    means, stds, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
+    counts = _get_counts(grid, day, d1, d2)
+
+    if param not in means:
+        raise KeyError(f"Paramètre '{param}' absent. Disponibles : {list(means)}")
+
+    n = counts[param].astype(float)
+    n_plot = np.where(n > 0, n, np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        std_err = np.where(n > 0, stds[param] / np.sqrt(n), np.nan)
+
+    LON2D, LAT2D = np.meshgrid(grid.lon_bins, grid.lat_bins)
+    proj = ccrs.SouthPolarStereo()
+
+    fig = plt.figure(figsize=(28, 7))
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        f"{param.upper()}  |  {n_orbits} orbites  |  "
+        f"grille {grid.dlat}°×{grid.dlon}°\n{label}",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    theta  = np.linspace(0, 2 * np.pi, 100)
+    verts  = np.vstack([np.sin(theta), np.cos(theta)]).T
+    circle = mpath.Path(verts * 0.5 + [0.5, 0.5])
+
+    base_label = cbar_label or f"{param.upper()} (g/m²)"
+    panels = [
+        (means[param], f"Mean ({base_label})",      vmin_mean, vmax_mean, f"{param.upper()} — Mean",               "rainbow"),
+        (stds[param],  f"Std dev ({base_label})",   vmin_std,  vmax_std,  f"{param.upper()} — Std dev",            "rainbow"),
+        (std_err,      f"Std error ({base_label})", vmin_se,   vmax_se,   f"{param.upper()} — Std error",          "rainbow"),
+        (n_plot,       "Number of observations",    vmin_n,    vmax_n,    f"{param.upper()} — Nb observations",    "rainbow"),
+    ]
+
+    for col, (data, cb_label, vmin, vmax, title, cmap) in enumerate(panels, 1):
+        ax = fig.add_subplot(1, 4, col, projection=proj)
+        ax.set_extent([-180, 180, -90, -60], ccrs.PlateCarree())
+        ax.add_feature(cfeature.LAND)
+        ax.add_feature(cfeature.OCEAN)
+        ax.add_feature(cfeature.COASTLINE)
+        ax.set_boundary(circle, transform=ax.transAxes)
+        ax.gridlines(alpha=0.3)
+
+        pc = ax.pcolormesh(LON2D, LAT2D, data, cmap=cmap,
+                           vmin=vmin, vmax=vmax,
+                           transform=ccrs.PlateCarree(), shading="auto")
+        ax.plot(LON_REF, LAT_REF, color="#FFA500", marker=".", markersize=5,
+                linestyle="none", transform=ccrs.PlateCarree())
+        _add_distance_circles(ax)
+
+        plt.colorbar(pc, ax=ax, orientation="horizontal",
+                     shrink=0.8, pad=0.04, label=cb_label)
+        ax.set_title(title, fontsize=10, fontweight=TITLE_WEIGHT, color=TITLE_COLOR)
+
+    plt.tight_layout()
+    plt.show()
 
 
 def plot_grid_lwp_iwp(grid, day=None, d1=None, d2=None) -> None:
@@ -619,6 +716,15 @@ def plot_grid_lwp_iwp(grid, day=None, d1=None, d2=None) -> None:
     plt.show()
 
 
+def _get_counts(grid, day, d1, d2) -> dict:
+    """Retourne le dict de counts pour le jour ou la plage demandée."""
+    if day is not None:
+        return grid.count(day)
+    if d1 is not None and d2 is not None:
+        return grid.count_range(d1, d2)
+    return grid.count_range(grid.dates[0], grid.dates[-1])
+
+
 def plot_grid_count(grid_or_dict,
                     param: str = "lwp", day: str | None = None,
                     d1: str | None = None, d2: str | None = None,
@@ -632,12 +738,7 @@ def plot_grid_count(grid_or_dict,
         lon_bins = grid.lon_bins
         lat_bins = grid.lat_bins
         _, _, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
-        if day is not None:
-            counts = grid.count(day)
-        elif d1 is not None and d2 is not None:
-            counts = grid.count_range(d1, d2)
-        else:
-            counts = grid.count_range(grid.dates[0], grid.dates[-1])
+        counts = _get_counts(grid, day, d1, d2)
 
     if param not in counts:
         raise KeyError(f"Paramètre '{param}' absent des counts.")
@@ -662,12 +763,7 @@ def plot_grid_count_histogram(grid_or_dict, param: str = "lwp",
     else:
         grid = grid_or_dict
         _, _, _, label = _resolve_grid_range(grid, day, d1, d2)
-        if day is not None:
-            counts = grid.count(day)
-        elif d1 is not None and d2 is not None:
-            counts = grid.count_range(d1, d2)
-        else:
-            counts = grid.count_range(grid.dates[0], grid.dates[-1])
+        counts = _get_counts(grid, day, d1, d2)
 
     if param not in counts:
         raise KeyError(f"Paramètre '{param}' absent des counts.")
@@ -778,3 +874,116 @@ def orbites_above_threshold(orbites: list[dict], param: str = "lwp",
     return filtered
 
 
+# ============================================================
+# ÉVOLUTION TEMPORELLE LWP / IWP PAR RAYON (grille journalière)
+# ============================================================
+
+_RADIUS_STYLE = [
+    {"radius": 500,  "color": "#1565C0", "linestyle": "-",  "label": "R = 500 km"},
+    {"radius": 1000, "color": "#C62828", "linestyle": "--", "label": "R = 1000 km"},
+]
+
+
+def _grid_distance_mask(grid, radius_km: float) -> np.ndarray:
+    """Masque booléen (n_lat × n_lon) des cellules à ≤ radius_km du Dôme C."""
+    LAT2D, LON2D = np.meshgrid(grid.lat_bins, grid.lon_bins, indexing="ij")
+    return haversine(LAT2D, LON2D, LAT_REF, LON_REF) <= radius_km
+
+
+def plot_temporal_lwp_iwp(grid, d1: str | None = None, d2: str | None = None,
+                          mode: str = "jour") -> None:
+    """
+    Évolution temporelle du LWP et IWP moyennés spatialement dans les cercles
+    de 500 km et 1000 km autour du Dôme C.
+
+    Paramètres
+    ----------
+    grid : GridAccumulator  grille chargée avec GridAccumulator.load()
+    d1   : str | None       début de la période (YYYY-MM-DD), défaut = premier jour
+    d2   : str | None       fin   de la période (YYYY-MM-DD), défaut = dernier jour
+    mode : str              "jour"  → un tick par jour, labels "DD Mon YYYY"
+                            "heure" → ticks toutes les 6 h, labels "DD Mon HHh"
+    """
+    if mode not in ("jour", "heure"):
+        raise ValueError(f"mode doit être 'jour' ou 'heure', reçu : '{mode}'")
+    d1 = d1 or grid.dates[0]
+    d2 = d2 or grid.dates[-1]
+    days = [d for d in grid.dates if d1 <= d <= d2]
+    if not days:
+        raise ValueError(f"Aucun jour entre {d1} et {d2}. Disponibles : {grid.dates}")
+
+    masks = {cfg["radius"]: _grid_distance_mask(grid, cfg["radius"])
+             for cfg in _RADIUS_STYLE}
+
+    # Séries temporelles : {radius: {param: [valeur par jour]}}
+    series: dict[int, dict[str, list]] = {
+        cfg["radius"]: {"lwp": [], "iwp": []} for cfg in _RADIUS_STYLE
+    }
+    dates_dt = [pd.Timestamp(d) for d in days]
+
+    for day in days:
+        means = grid.mean(day)
+        for cfg in _RADIUS_STYLE:
+            r = cfg["radius"]
+            mask = masks[r]
+            for param in ("lwp", "iwp"):
+                vals = means[param][mask]
+                series[r][param].append(np.nanmean(vals) if np.any(~np.isnan(vals)) else np.nan)
+
+    # Conversion g/m² (données brutes en kg/m², facteur ×1000)
+    # — vérification : si les valeurs sont déjà en g/m² on ne multiplie pas
+    sample_lwp = np.nanmax([v for cfg in _RADIUS_STYLE
+                            for v in series[cfg["radius"]]["lwp"] if not np.isnan(v)] or [0])
+    scale = 1000.0 if sample_lwp < 1.0 else 1.0
+    unit  = "g/m²"
+
+    # Figure
+    fig, (ax_lwp, ax_iwp) = plt.subplots(
+        2, 1, figsize=(14, 8), sharex=True,
+        gridspec_kw={"hspace": 0.06}
+    )
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        f"EarthCARE ACM_CLP_2B — LWP & IWP moyens autour du Dôme C\n"
+        f"Période : {d1} → {d2}  |  grille {grid.dlat}°×{grid.dlon}°",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR
+    )
+
+    for cfg in _RADIUS_STYLE:
+        r   = cfg["radius"]
+        kw  = dict(color=cfg["color"], linestyle=cfg["linestyle"],
+                   linewidth=1.8, marker="o", markersize=4, label=cfg["label"])
+        lwp_vals = np.array(series[r]["lwp"]) * scale
+        iwp_vals = np.array(series[r]["iwp"]) * scale
+        ax_lwp.plot(dates_dt, lwp_vals, **kw)
+        ax_iwp.plot(dates_dt, iwp_vals, **kw)
+
+    for ax, ylabel, title in [
+        (ax_lwp, f"LWP moyen ({unit})", "Liquid Water Path"),
+        (ax_iwp, f"IWP moyen ({unit})", "Ice Water Path"),
+    ]:
+        ax.set_ylabel(ylabel, fontsize=10, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
+        ax.set_title(title, fontsize=11, color=TITLE_COLOR, fontweight=TITLE_WEIGHT, loc="left")
+        ax.legend(fontsize=9, framealpha=0.8)
+        ax.grid(True, alpha=0.3, linestyle=":")
+        ax.set_ylim(bottom=0)
+        ax.axhline(0, color="grey", linewidth=0.5)
+
+    # Axe temporel selon le mode choisi
+    n_days = len(days)
+    if mode == "heure":
+        interval_h = max(6, (n_days * 24) // 20 // 6 * 6)   # ~20 labels max, multiple de 6
+        ax_iwp.xaxis.set_major_locator(mdates.HourLocator(interval=interval_h))
+        ax_iwp.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Hh UTC"))
+        ax_iwp.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
+        ax_iwp.set_xlabel("Heure (UTC)", fontsize=10)
+    else:  # "jour"
+        interval_d = max(1, n_days // 12)
+        ax_iwp.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+        ax_iwp.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+        ax_iwp.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+        ax_iwp.set_xlabel("Date (UTC)", fontsize=10)
+    plt.setp(ax_iwp.xaxis.get_majorticklabels(), ha="center", fontsize=9)
+
+    plt.tight_layout()
+    plt.show()
