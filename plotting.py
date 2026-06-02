@@ -1022,6 +1022,85 @@ def plot_temporal_lwp_iwp(grid, d1: str | None = None, d2: str | None = None,
 # Série temporelle LWP dans un cercle autour d'un point de référence
 # ============================================================
 
+def plot_lwp_timeseries_orbites(orbites: list,
+                                 radius_km: float = 500.0,
+                                 vmax: float | None = None) -> None:
+    """LWP vs temps depuis la liste orbites déjà en mémoire.
+
+    Parameters
+    ----------
+    orbites   : list[dict]  sortie de prepare_multi_orbits()
+    radius_km : float       rayon de sélection en km autour du Dôme C
+    vmax      : float       limite haute de l'axe Y (g/m²), None = auto
+    """
+    from datetime import timedelta as _td
+    from processing import haversine as _hav
+
+    _EPOCH = __import__("datetime").datetime(1970, 1, 1)
+
+    all_times, all_lwp, all_dist = [], [], []
+
+    for orb in orbites:
+        t0 = orb.get("t0_utc")
+        if t0 is None:
+            continue
+        lat  = np.asarray(orb["lat"],  dtype=np.float64)
+        lon  = np.asarray(orb["lon"],  dtype=np.float64)
+        lwp  = np.asarray(orb["lwp"],  dtype=np.float64)
+        time_rel = np.asarray(orb.get("time", np.zeros(len(lat))), dtype=np.float64)
+
+        dist = _hav(lat, lon, LAT_REF, LON_REF)
+        mask = dist <= radius_km
+        if not np.any(mask):
+            continue
+
+        t0_unix = (t0 - _EPOCH).total_seconds()
+        times_abs = [_EPOCH + _td(seconds=float(t0_unix + tr)) for tr in time_rel[mask]]
+
+        all_times.extend(times_abs)
+        all_lwp.append(np.where(lwp[mask] < 0, np.nan, lwp[mask]))
+        all_dist.append(dist[mask])
+
+    if not all_times:
+        print(f"Aucun point dans le rayon {radius_km} km.")
+        return
+
+    all_lwp  = np.concatenate(all_lwp)
+    all_dist = np.concatenate(all_dist)
+    order    = np.argsort([t.timestamp() for t in all_times])
+    all_times = [all_times[i] for i in order]
+    all_lwp   = all_lwp[order]
+    all_dist  = all_dist[order]
+    n_pts = len(all_times)
+
+    fig, ax = plt.subplots(figsize=(16, 5))
+    fig.patch.set_facecolor("white")
+
+    sc = ax.scatter(all_times, all_lwp, s=6, c=all_dist, cmap="viridis_r",
+                    vmin=0, vmax=radius_km, linewidths=0, alpha=0.8)
+    fig.colorbar(sc, ax=ax, pad=0.01, label="Distance au Dôme C (km)").ax.tick_params(labelsize=8)
+
+    ax.set_ylabel("LWP (g/m²)", fontsize=10)
+    ax.set_xlabel("Date (UTC)", fontsize=10)
+    if vmax is not None:
+        ax.set_ylim(0, vmax)
+    ax.grid(alpha=0.3)
+
+    period = f"{all_times[0]:%Y-%m-%d} → {all_times[-1]:%Y-%m-%d}"
+    ax.set_title(
+        f"LWP — rayon {radius_km:.0f} km autour du Dôme C  |  "
+        f"{n_pts} profils  |  {period}",
+        fontsize=11, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    n_days = (all_times[-1] - all_times[0]).days + 1
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+    ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 12]))
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_lwp_timeseries(orbit_cache: str,
                         radius_km: float = 500.0,
                         d1: str | None = None,
