@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import timedelta, timezone
 import numpy as np
 from config import LAT_REF, LON_REF
 from pathlib import Path
@@ -186,6 +186,129 @@ def save_multi_orbits(orbites: list[dict], filepath: str) -> None:
     print(f"Sauvegarde dans {filepath}")
     print(f"{len(orbites)} orbites | {size_kb:.0f} KB")
     print(f"Periode : du {combined.attrs['first_day']}" f" au {combined.attrs['last_day']}")
+
+
+_EPOCH = datetime(1970, 1, 1)
+
+
+def extract_circle_timeseries(orbit_cache: str,
+                               radius_km: float = 500.0,
+                               lat_ref: float = LAT_REF,
+                               lon_ref: float = LON_REF,
+                               d1: str | None = None,
+                               d2: str | None = None) -> dict:
+    """Extrait tous les points dans un cercle autour d'un point de référence.
+
+    Itère sur ORBIT_CACHE orbite par orbite. Pour chaque point dont la
+    distance à (lat_ref, lon_ref) est ≤ radius_km, conserve :
+      - time_unix  : float64, secondes Unix (double précision)
+      - time_dt    : datetime Python
+      - lat, lon, dist_km
+      - lwp, iwp   : float32 1D
+      - iwc, lwc, temperature, height : float32 2D (n_pts × n_levels)
+      - orbit_id   : str, identifiant de l'orbite source
+
+    Parameters
+    ----------
+    orbit_cache : str   chemin vers le fichier orbites_raw.nc
+    radius_km   : float rayon de sélection en km
+    lat_ref, lon_ref : coordonnées du centre (défaut : Dôme C)
+    d1, d2      : filtres de date "YYYY-MM-DD" (optionnels)
+    """
+    from orbits_nc import iter_raw_orbits
+
+    out: dict[str, list] = {
+        "time_unix": [], "time_dt": [],
+        "lat": [], "lon": [], "dist_km": [],
+        "lwp": [], "iwp": [],
+        "iwc": [], "lwc": [], "temperature": [], "height": [],
+        "orbit_id": [],
+    }
+
+    for orb in iter_raw_orbits(orbit_cache):
+        start_day = orb["start_time"].decode().replace("UTC=", "").replace("Z", "")
+        day_str = start_day[:10]
+        if d1 and day_str < d1:
+            continue
+        if d2 and day_str > d2:
+            continue
+
+        t0 = orb.get("t0_utc")
+        if t0 is None:
+            continue
+
+        lat  = np.asarray(orb["lat"],  dtype=np.float64)
+        lon  = np.asarray(orb["lon"],  dtype=np.float64)
+        time_rel = np.asarray(orb.get("time", np.zeros(len(lat))), dtype=np.float64)
+
+        dist = haversine(lat, lon, lat_ref, lon_ref)
+        mask = dist <= radius_km
+        if not np.any(mask):
+            continue
+
+        t0_unix = (t0 - _EPOCH).total_seconds()
+        time_unix_pts = t0_unix + time_rel[mask]          # float64
+
+        orbit_id = orb.get("orbit_id", day_str)
+
+        out["time_unix"].append(time_unix_pts)
+        out["time_dt"].extend(
+            [_EPOCH + timedelta(seconds=float(tu)) for tu in time_unix_pts]
+        )
+        out["lat"].append(lat[mask])
+        out["lon"].append(lon[mask])
+        out["dist_km"].append(dist[mask])
+        out["lwp"].append(np.where(orb["lwp"][mask] < 0, np.nan,
+                                   orb["lwp"][mask].astype(np.float64)))
+        out["iwp"].append(np.where(orb["iwp"][mask] < 0, np.nan,
+                                   orb["iwp"][mask].astype(np.float64)))
+
+        for key2d in ("iwc", "lwc", "temperature", "height"):
+            arr = orb.get(key2d)
+            if arr is not None:
+                arr2d = np.asarray(arr, dtype=np.float64)
+                out[key2d].append(np.where(arr2d[mask] < 0, np.nan, arr2d[mask]))
+            else:
+                n = int(np.sum(mask))
+                out[key2d].append(np.full((n, 1), np.nan))
+
+        n_pts = int(np.sum(mask))
+        out["orbit_id"].extend([orbit_id] * n_pts)
+
+    if not out["time_unix"]:
+        raise ValueError(f"Aucun point trouvé dans le rayon {radius_km} km "
+                         f"entre {d1} et {d2}.")
+
+    result = {
+        "time_unix":   np.concatenate(out["time_unix"]),
+        "time_dt":     out["time_dt"],
+        "lat":         np.concatenate(out["lat"]),
+        "lon":         np.concatenate(out["lon"]),
+        "dist_km":     np.concatenate(out["dist_km"]),
+        "lwp":         np.concatenate(out["lwp"]),
+        "iwp":         np.concatenate(out["iwp"]),
+        "iwc":         np.vstack(out["iwc"]),
+        "lwc":         np.vstack(out["lwc"]),
+        "temperature": np.vstack(out["temperature"]),
+        "height":      np.vstack(out["height"]),
+        "orbit_id":    out["orbit_id"],
+        "radius_km":   radius_km,
+        "lat_ref":     lat_ref,
+        "lon_ref":     lon_ref,
+    }
+
+    order = np.argsort(result["time_unix"])
+    for k in ("time_unix", "lat", "lon", "dist_km", "lwp", "iwp"):
+        result[k] = result[k][order]
+    for k in ("iwc", "lwc", "temperature", "height"):
+        result[k] = result[k][order]
+    result["time_dt"]  = [result["time_dt"][i]  for i in order]
+    result["orbit_id"] = [result["orbit_id"][i] for i in order]
+
+    n = len(result["time_unix"])
+    print(f"[circle_ts] {n} points | rayon {radius_km} km | "
+          f"{result['time_dt'][0]:%Y-%m-%d} → {result['time_dt'][-1]:%Y-%m-%d}")
+    return result
 
 
 def load_multi_orbits_nc(filepath: str) -> list[dict]:

@@ -603,14 +603,20 @@ def plot_grid_results(grid: GridAccumulator, day: str | None = None,
 
 def plot_grid_mean_std_se(grid, param: str = "lwp",
                           cbar_label: str | None = None,
-                          vmin_mean=None, vmax_mean=None,
-                          vmin_std=None,  vmax_std=None,
-                          vmin_se=None,   vmax_se=None,
-                          vmin_n=None,    vmax_n=None,
+                          vmin_mean=None, vmax_mean=None, bounds_mean=None, log_mean=False, twoslope_mean=None,
+                          vmin_std=None,  vmax_std=None,  bounds_std=None,  log_std=False,  twoslope_std=None,
+                          vmin_se=None,   vmax_se=None,   bounds_se=None,   log_se=False,   twoslope_se=None,
+                          vmin_n=None,    vmax_n=None,    bounds_n=None,    log_n=False,    twoslope_n=None,
                           day: str | None = None,
                           d1: str | None = None,
                           d2: str | None = None) -> None:
-    """Affiche côte à côte la moyenne, l'écart-type, l'erreur sur la moyenne et le nombre d'observations."""
+    """Affiche côte à côte la moyenne, l'écart-type, l'erreur sur la moyenne et le nombre d'observations.
+
+    Priorité d'échelle par panneau : log_* > twoslope_* > bounds_* > vmin_*/vmax_* (linéaire).
+    log_*=True              → LogNorm(vmin_* or 0.1, vmax_*)
+    twoslope_*=(v0, vc, v1) → TwoSlopeNorm : linéaire [v0→vc] puis linéaire [vc→v1]
+    bounds_*=[...]          → BoundaryNorm avec bornes libres
+    """
     means, stds, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
     counts = _get_counts(grid, day, d1, d2)
 
@@ -639,13 +645,13 @@ def plot_grid_mean_std_se(grid, param: str = "lwp",
 
     base_label = cbar_label or f"{param.upper()} (g/m²)"
     panels = [
-        (means[param], f"Mean ({base_label})",      vmin_mean, vmax_mean, f"{param.upper()} — Mean",               "rainbow"),
-        (stds[param],  f"Std dev ({base_label})",   vmin_std,  vmax_std,  f"{param.upper()} — Std dev",            "rainbow"),
-        (std_err,      f"Std error ({base_label})", vmin_se,   vmax_se,   f"{param.upper()} — Std error",          "rainbow"),
-        (n_plot,       "Number of observations",    vmin_n,    vmax_n,    f"{param.upper()} — Nb observations",    "rainbow"),
+        (means[param], f"Mean ({base_label})",      vmin_mean, vmax_mean, bounds_mean, log_mean, twoslope_mean, f"{param.upper()} — Mean"),
+        (stds[param],  f"Std dev ({base_label})",   vmin_std,  vmax_std,  bounds_std,  log_std,  twoslope_std,  f"{param.upper()} — Std dev"),
+        (std_err,      f"Std error ({base_label})", vmin_se,   vmax_se,   bounds_se,   log_se,   twoslope_se,   f"{param.upper()} — Std error"),
+        (n_plot,       "Number of observations",    vmin_n,    vmax_n,    bounds_n,    log_n,    twoslope_n,    f"{param.upper()} — Nb observations"),
     ]
 
-    for col, (data, cb_label, vmin, vmax, title, cmap) in enumerate(panels, 1):
+    for col, (data, cb_label, vmin, vmax, bounds, use_log, twoslope, title) in enumerate(panels, 1):
         ax = fig.add_subplot(1, 4, col, projection=proj)
         ax.set_extent([-180, 180, -90, -60], ccrs.PlateCarree())
         ax.add_feature(cfeature.LAND)
@@ -654,15 +660,38 @@ def plot_grid_mean_std_se(grid, param: str = "lwp",
         ax.set_boundary(circle, transform=ax.transAxes)
         ax.gridlines(alpha=0.3)
 
-        pc = ax.pcolormesh(LON2D, LAT2D, data, cmap=cmap,
-                           vmin=vmin, vmax=vmax,
-                           transform=ccrs.PlateCarree(), shading="auto")
+        cmap = plt.get_cmap("rainbow")
+        if use_log:
+            norm = mcolors.LogNorm(vmin=vmin or 0.1, vmax=vmax)
+            pc = ax.pcolormesh(LON2D, LAT2D, data, cmap=cmap, norm=norm,
+                               transform=ccrs.PlateCarree(), shading="auto")
+            plt.colorbar(pc, ax=ax, orientation="horizontal",
+                         shrink=0.8, pad=0.04, label=cb_label)
+        elif twoslope is not None:
+            v0, vc, v1 = twoslope
+            norm = mcolors.TwoSlopeNorm(vmin=v0, vcenter=vc, vmax=v1)
+            pc = ax.pcolormesh(LON2D, LAT2D, data, cmap=cmap, norm=norm,
+                               transform=ccrs.PlateCarree(), shading="auto")
+            cb = plt.colorbar(pc, ax=ax, orientation="horizontal",
+                              shrink=0.8, pad=0.04, label=cb_label)
+            cb.set_ticks([v0, vc, v1])
+        elif bounds is not None:
+            norm = mcolors.BoundaryNorm(boundaries=bounds, ncolors=cmap.N, extend="max")
+            pc = ax.pcolormesh(LON2D, LAT2D, data, cmap=cmap, norm=norm,
+                               transform=ccrs.PlateCarree(), shading="auto")
+            cb = plt.colorbar(pc, ax=ax, orientation="horizontal",
+                              shrink=0.8, pad=0.04, label=cb_label)
+            cb.set_ticks(bounds)
+        else:
+            pc = ax.pcolormesh(LON2D, LAT2D, data, cmap=cmap,
+                               vmin=vmin, vmax=vmax,
+                               transform=ccrs.PlateCarree(), shading="auto")
+            plt.colorbar(pc, ax=ax, orientation="horizontal",
+                         shrink=0.8, pad=0.04, label=cb_label)
+
         ax.plot(LON_REF, LAT_REF, color="#FFA500", marker=".", markersize=5,
                 linestyle="none", transform=ccrs.PlateCarree())
         _add_distance_circles(ax)
-
-        plt.colorbar(pc, ax=ax, orientation="horizontal",
-                     shrink=0.8, pad=0.04, label=cb_label)
         ax.set_title(title, fontsize=10, fontweight=TITLE_WEIGHT, color=TITLE_COLOR)
 
     plt.tight_layout()
@@ -984,6 +1013,183 @@ def plot_temporal_lwp_iwp(grid, d1: str | None = None, d2: str | None = None,
         ax_iwp.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
         ax_iwp.set_xlabel("Date (UTC)", fontsize=10)
     plt.setp(ax_iwp.xaxis.get_majorticklabels(), ha="center", fontsize=9)
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# Série temporelle LWP dans un cercle autour d'un point de référence
+# ============================================================
+
+def plot_lwp_timeseries(orbit_cache: str,
+                        radius_km: float = 500.0,
+                        d1: str | None = None,
+                        d2: str | None = None,
+                        vmax: float | None = None) -> None:
+    """LWP vs temps pour tous les profils dans un cercle autour du Dôme C.
+
+    Parameters
+    ----------
+    orbit_cache : str   chemin vers orbites_raw.nc
+    radius_km   : float rayon de sélection en km
+    d1, d2      : filtres de date "YYYY-MM-DD"
+    vmax        : limite haute de l'axe Y (g/m²), None = auto
+    """
+    from processing import extract_circle_timeseries
+
+    ts = extract_circle_timeseries(orbit_cache, radius_km=radius_km, d1=d1, d2=d2)
+
+    times    = ts["time_dt"]
+    lwp      = ts["lwp"]
+    dist_km  = ts["dist_km"]
+    n_pts    = len(times)
+
+    fig, ax = plt.subplots(figsize=(16, 5))
+    fig.patch.set_facecolor("white")
+
+    sc = ax.scatter(times, lwp, s=6, c=dist_km, cmap="viridis_r",
+                    vmin=0, vmax=radius_km, linewidths=0, alpha=0.8)
+    cb = fig.colorbar(sc, ax=ax, pad=0.01, label="Distance au Dôme C (km)")
+    cb.ax.tick_params(labelsize=8)
+
+    ax.set_ylabel("LWP (g/m²)", fontsize=10)
+    ax.set_xlabel("Date (UTC)", fontsize=10)
+    if vmax is not None:
+        ax.set_ylim(0, vmax)
+    ax.grid(alpha=0.3)
+
+    period = f"{times[0]:%Y-%m-%d} → {times[-1]:%Y-%m-%d}"
+    ax.set_title(
+        f"LWP — rayon {radius_km:.0f} km autour du Dôme C  |  "
+        f"{n_pts} profils  |  {period}",
+        fontsize=11, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    n_days = (times[-1] - times[0]).days + 1
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+    ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 12]))
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# Série temporelle dans un cercle autour d'un point de référence
+# ============================================================
+
+def plot_circle_timeseries(ts: dict,
+                            lwp_bounds=None,   lwp_log=False,
+                            iwp_bounds=None,   iwp_log=False,
+                            iwc_bounds=None,   iwc_log=False,
+                            lwc_bounds=None,   lwc_log=False,
+                            temp_vmin=-50,     temp_vmax=-10) -> None:
+    """Figure 5 panneaux : LWP, IWP (1D) + curtains IWC, LWC, Température.
+
+    Parameters
+    ----------
+    ts : dict   sortie de extract_circle_timeseries()
+    *_bounds    : liste de bornes pour BoundaryNorm (ex. [0,1,5,50])
+    *_log       : True → LogNorm
+    temp_vmin/vmax : plage linéaire de la température (°C)
+    """
+    from matplotlib.dates import date2num
+
+    times = ts["time_dt"]
+    t_num = np.array(date2num(times))
+
+    lwp  = ts["lwp"]
+    iwp  = ts["iwp"]
+    iwc  = ts["iwc"]          # (n_pts × n_levels)
+    lwc  = ts["lwc"]
+    temp = ts["temperature"] - 273.15    # °C
+    hgt  = ts["height"] / 1000.0        # km
+
+    hgt_med = np.nanmedian(hgt, axis=0)  # altitude médiane par niveau
+
+    radius_km = ts["radius_km"]
+    n_pts     = len(times)
+
+    fig, axes = plt.subplots(5, 1, figsize=(16, 18),
+                             gridspec_kw={"height_ratios": [1, 1, 2, 2, 2]})
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        f"Série temporelle — rayon {radius_km:.0f} km autour de "
+        f"({ts['lat_ref']:.1f}°N, {ts['lon_ref']:.1f}°E)  |  {n_pts} profils\n"
+        f"{times[0]:%Y-%m-%d} → {times[-1]:%Y-%m-%d}",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    # ── panneau 1 : LWP ──────────────────────────────────────
+    ax = axes[0]
+    ax.scatter(times, lwp, s=4, c=ts["dist_km"], cmap="viridis_r",
+               vmin=0, vmax=radius_km, linewidths=0, alpha=0.7)
+    ax.set_ylabel("LWP (g/m²)", fontsize=9)
+    ax.set_title("Liquid Water Path", fontsize=9, color=TITLE_COLOR)
+    ax.grid(alpha=0.3)
+
+    # ── panneau 2 : IWP ──────────────────────────────────────
+    ax = axes[1]
+    sc = ax.scatter(times, iwp, s=4, c=ts["dist_km"], cmap="viridis_r",
+                    vmin=0, vmax=radius_km, linewidths=0, alpha=0.7)
+    ax.set_ylabel("IWP (g/m²)", fontsize=9)
+    ax.set_title("Ice Water Path", fontsize=9, color=TITLE_COLOR)
+    ax.grid(alpha=0.3)
+    cb = fig.colorbar(sc, ax=axes[:2], orientation="vertical",
+                      pad=0.01, shrink=0.8, label="Distance au Dôme C (km)")
+    cb.ax.tick_params(labelsize=8)
+
+    # helper : norme pour curtain
+    def _make_norm(data, bounds, use_log):
+        pos = data[data > 0]
+        vmin = float(np.nanpercentile(pos, 5))  if pos.size else 0.01
+        vmax = float(np.nanpercentile(pos, 99)) if pos.size else 1.0
+        if use_log:
+            return mcolors.LogNorm(vmin=max(vmin, 1e-6), vmax=vmax)
+        if bounds is not None:
+            return mcolors.BoundaryNorm(boundaries=bounds, ncolors=256, extend="max")
+        return mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    # ── panneaux 3-5 : curtains ──────────────────────────────
+    curtains = [
+        (iwc,  "IWC (g/m³)",       iwc_bounds,  iwc_log,  "rainbow", 2),
+        (lwc,  "LWC (g/m³)",       lwc_bounds,  lwc_log,  "rainbow", 3),
+        (temp, "Température (°C)", None,         False,    "RdBu_r",  4),
+    ]
+    for data, ylabel, bounds, use_log, cmap_name, idx in curtains:
+        ax = axes[idx]
+        if idx == 4:
+            norm = mcolors.Normalize(vmin=temp_vmin, vmax=temp_vmax)
+        else:
+            norm = _make_norm(data, bounds, use_log)
+
+        T_mesh = np.tile(t_num[:, np.newaxis], (1, hgt_med.shape[0]))
+        H_mesh = np.tile(hgt_med[np.newaxis, :], (len(t_num), 1))
+
+        pc = ax.pcolormesh(T_mesh, H_mesh, data,
+                           cmap=cmap_name, norm=norm,
+                           shading="nearest", rasterized=True)
+        ax.set_ylabel("Altitude (km)", fontsize=9)
+        ax.set_title(ylabel, fontsize=9, color=TITLE_COLOR)
+        cb2 = fig.colorbar(pc, ax=ax, orientation="vertical",
+                           pad=0.01, shrink=0.95, label=ylabel)
+        cb2.ax.tick_params(labelsize=8)
+        if bounds is not None and not use_log:
+            cb2.set_ticks(bounds)
+        ax.xaxis_date()
+        ax.grid(alpha=0.2)
+
+    # ── formatage axe X ──────────────────────────────────────
+    n_days = (times[-1] - times[0]).days + 1
+    interval_d = max(1, n_days // 10)
+    for ax in axes:
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 12]))
+        if ax is not axes[-1]:
+            plt.setp(ax.get_xticklabels(), visible=False)
+    axes[-1].set_xlabel("Date (UTC)", fontsize=10)
 
     plt.tight_layout()
     plt.show()
