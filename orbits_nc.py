@@ -104,8 +104,10 @@ def save_raw_orbits(orbites: list[dict], filepath: str) -> None:
         v_nom_orb[:]   = np.array(orbits_num, dtype=object)
 
         # Variables data pré-créées (fill_value=NaN, disk-backed)
+        # time en f8 (float64) pour conserver la précision des secondes depuis 2000
         vars_1d = {
-            p: root.createVariable(p, "f4", ("orbite", "point"),
+            p: root.createVariable(p, "f8" if p == "time" else "f4",
+                                   ("orbite", "point"),
                                    fill_value=np.nan, zlib=True, complevel=4)
             for p in RAW_PARAMS_1D
         }
@@ -120,7 +122,8 @@ def save_raw_orbits(orbites: list[dict], filepath: str) -> None:
             for p in RAW_PARAMS_1D:
                 arr = orb.get(p)
                 if arr is not None:
-                    arr = np.asarray(arr, dtype="f4").ravel()
+                    dtype = "f8" if p == "time" else "f4"
+                    arr = np.asarray(arr, dtype=dtype).ravel()
                     vars_1d[p][i, :len(arr)] = arr
 
             for p in RAW_PARAMS_2D:
@@ -193,11 +196,11 @@ def load_raw_orbits(filepath: str) -> list[dict]:
             "t0_utc":     t0_utc,
         }
 
-        # Paramètres 1D — tronquer au vrai n
+        # Paramètres 1D — tronquer au vrai n (time en float64)
         for p in RAW_PARAMS_1D:
             if p in orb_ds:
                 arr = orb_ds[p].values[:n_valid]
-                orb[p] = arr
+                orb[p] = arr.astype(np.float64) if p == "time" else arr
 
         # Paramètres 2D — tronquer les lignes padding
         for p in RAW_PARAMS_2D:
@@ -249,7 +252,8 @@ def iter_raw_orbits(filepath: str):
 
         for p in RAW_PARAMS_1D:
             if p in orb_ds:
-                orb[p] = orb_ds[p].values[:n_valid]
+                arr = orb_ds[p].values[:n_valid]
+                orb[p] = arr.astype(np.float64) if p == "time" else arr
 
         for p in RAW_PARAMS_2D:
             if p in orb_ds:
