@@ -1054,19 +1054,24 @@ def plot_lwp_hourly_stats(times: list, lwp: np.ndarray,
     )
 
     panels = [
-        ("mean", "Moyenne (g/m²)",             "#1f77b4"),
-        ("std",  "Écart-type (g/m²)",          "#ff7f0e"),
-        ("se",   "Erreur sur la moyenne (g/m²)","#2ca02c"),
+        ("mean", "Moyenne (g/m²)",              "#1f77b4"),
+        ("std",  "Écart-type (g/m²)",           "#ff7f0e"),
+        ("se",   "Erreur sur la moyenne (g/m²)", "#2ca02c"),
     ]
     for ax, (col, label, color) in zip(axes, panels):
-        ax.bar(stats["hour_bin"], stats[col], width=1/24,
-               color=color, alpha=0.8, align="edge")
+        ax.scatter(stats["hour_bin"], stats[col],
+                   s=18, color=color, alpha=0.85, linewidths=0)
         ax.set_ylabel(label, fontsize=9)
-        ax.grid(axis="y", alpha=0.3)
+        ax.grid(alpha=0.3)
 
     n_days = (stats["hour_bin"].iloc[-1] - stats["hour_bin"].iloc[0]).days + 1
-    axes[-1].xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+    interval_d = max(1, n_days // 10)
+    for ax in axes:
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
+        ax.xaxis.set_minor_formatter(mdates.DateFormatter("%Hh"))
+        ax.tick_params(axis="x", which="minor", labelsize=6, labelcolor="grey")
     axes[-1].set_xlabel("Date (UTC)", fontsize=10)
 
     plt.tight_layout()
@@ -1163,16 +1168,19 @@ def plot_lwp_timeseries_orbites(orbites: list,
         ("se",   "Erreur sur la moyenne (g/m²)", "#2ca02c"),
     ]
     for ax, (col, label, color) in zip(axes[1:], stat_panels):
-        ax.bar(stats["hour_bin"], stats[col], width=1/24,
-               color=color, alpha=0.8, align="edge")
+        ax.scatter(stats["hour_bin"], stats[col],
+                   s=18, color=color, alpha=0.85, linewidths=0)
         ax.set_ylabel(label, fontsize=9)
-        ax.grid(axis="y", alpha=0.3)
+        ax.grid(alpha=0.3)
 
     n_days = (all_times[-1] - all_times[0]).days + 1
+    interval_d = max(1, n_days // 10)
     for ax in axes:
-        ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
-        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 12]))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
+        ax.xaxis.set_minor_formatter(mdates.DateFormatter("%Hh"))
+        ax.tick_params(axis="x", which="minor", labelsize=6, labelcolor="grey")
     axes[-1].set_xlabel("Date (UTC)", fontsize=10)
 
     plt.tight_layout()
