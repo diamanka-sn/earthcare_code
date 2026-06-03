@@ -1019,64 +1019,97 @@ def plot_temporal_lwp_iwp(grid, d1: str | None = None, d2: str | None = None,
 
 
 # ============================================================
+# Statistiques horaires du LWP (moyenne / std / erreur)
+# ============================================================
+
+def plot_lwp_hourly_stats(times: list, lwp: np.ndarray,
+                          radius_km: float = 500,
+                          min_n: int = 2) -> None:
+    """Moyenne, écart-type et erreur sur la moyenne du LWP par bin horaire.
+
+    Parameters
+    ----------
+    times     : list[datetime]  sortie de la boucle d'extraction
+    lwp       : np.ndarray 1D  valeurs LWP correspondantes (LWP=0 inclus)
+    radius_km : float           affiché dans le titre
+    min_n     : int             bins avec moins de min_n points ignorés
+    """
+    import pandas as pd
+
+    df = pd.DataFrame({"time": times, "lwp": lwp}).dropna(subset=["lwp"])
+    df["hour_bin"] = pd.to_datetime(df["time"]).dt.floor("h")
+
+    stats = df.groupby("hour_bin")["lwp"].agg(
+        mean="mean", std="std", n="count"
+    ).reset_index()
+    stats["se"] = stats["std"] / np.sqrt(stats["n"])
+    stats = stats[stats["n"] >= min_n]
+
+    fig, axes = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        f"LWP horaire — rayon {radius_km:.0f} km autour du Dôme C  "
+        f"(LWP=0 inclus, n≥{min_n})",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    panels = [
+        ("mean", "Moyenne (g/m²)",             "#1f77b4"),
+        ("std",  "Écart-type (g/m²)",          "#ff7f0e"),
+        ("se",   "Erreur sur la moyenne (g/m²)","#2ca02c"),
+    ]
+    for ax, (col, label, color) in zip(axes, panels):
+        ax.bar(stats["hour_bin"], stats[col], width=1/24,
+               color=color, alpha=0.8, align="edge")
+        ax.set_ylabel(label, fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+
+    n_days = (stats["hour_bin"].iloc[-1] - stats["hour_bin"].iloc[0]).days + 1
+    axes[-1].xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+    axes[-1].set_xlabel("Date (UTC)", fontsize=10)
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
 # Série temporelle LWP dans un cercle autour d'un point de référence
 # ============================================================
 
 def plot_lwp_timeseries_orbites(orbites: list,
                                  radius_km: float = 500.0,
-                                 vmax: float | None = None) -> None:
-    """LWP vs temps depuis la liste orbites déjà en mémoire.
+                                 vmax: float | None = None,
+                                 min_n: int = 2) -> None:
+    """LWP vs temps + statistiques horaires (moyenne/std/erreur).
 
     Parameters
     ----------
     orbites   : list[dict]  sortie de prepare_multi_orbits()
     radius_km : float       rayon de sélection en km autour du Dôme C
-    vmax      : float       limite haute de l'axe Y (g/m²), None = auto
+    vmax      : float       limite haute de l'axe Y scatter (g/m²)
+    min_n     : int         bins horaires avec moins de min_n points ignorés
     """
+    import pandas as pd
     from datetime import timedelta as _td, datetime as _dt
     from processing import haversine as _hav
 
-    _EPOCH = _dt(1970, 1, 1)
-
-    def _parse_t0(orb):
-        # t0_utc présent (load_raw_orbits)
-        t0 = orb.get("t0_utc")
-        if isinstance(t0, _dt):
-            return t0
-        # Extraire la chaîne depuis start_day ou start_time
-        s = orb.get("start_day") or ""
-        if not s:
-            st = orb.get("start_time")
-            if st is not None:
-                s = st.decode() if isinstance(st, bytes) else str(st)
-        s = s.replace("UTC=", "").replace("Z", "").strip()[:19]
-        # Accepter "2025-12-05T11:13:38" et "2025-12-05 11:13:38"
-        s = s.replace("T", " ")
-        try:
-            return _dt.strptime(s, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            return None
+    EPOCH_2000 = _dt(2000, 1, 1)
 
     all_times, all_lwp, all_dist = [], [], []
 
     for orb in orbites:
-        t0 = _parse_t0(orb)
-        if t0 is None:
-            continue
         lat  = np.asarray(orb["lat"],  dtype=np.float64)
         lon  = np.asarray(orb["lon"],  dtype=np.float64)
         lwp  = np.asarray(orb["lwp"],  dtype=np.float64)
-        time_rel = np.asarray(orb.get("time", np.zeros(len(lat))), dtype=np.float64)
+        time = np.asarray(orb["time"], dtype=np.float64)
 
         dist = _hav(lat, lon, LAT_REF, LON_REF)
-        mask = dist <= radius_km
+        mask = (dist <= radius_km) & (time > 0.0)
         if not np.any(mask):
             continue
 
-        t0_unix = (t0 - _EPOCH).total_seconds()
-        times_abs = [_EPOCH + _td(seconds=float(t0_unix + tr)) for tr in time_rel[mask]]
-
-        all_times.extend(times_abs)
+        all_times.extend([EPOCH_2000 + _td(seconds=float(t)) for t in time[mask]])
         all_lwp.append(np.where(lwp[mask] < 0, np.nan, lwp[mask]))
         all_dist.append(dist[mask])
 
@@ -1086,36 +1119,62 @@ def plot_lwp_timeseries_orbites(orbites: list,
 
     all_lwp  = np.concatenate(all_lwp)
     all_dist = np.concatenate(all_dist)
-    order    = np.argsort([t.timestamp() for t in all_times])
-    all_times = [all_times[i] for i in order]
-    all_lwp   = all_lwp[order]
-    all_dist  = all_dist[order]
-    n_pts = len(all_times)
+    n_pts    = len(all_times)
 
-    fig, ax = plt.subplots(figsize=(16, 5))
-    fig.patch.set_facecolor("white")
+    # ── Statistiques horaires ──────────────────────────────────
+    df = pd.DataFrame({"time": all_times, "lwp": all_lwp}).dropna(subset=["lwp"])
+    df["hour_bin"] = pd.to_datetime(df["time"]).dt.floor("h")
+    stats = df.groupby("hour_bin")["lwp"].agg(
+        mean="mean", std="std", n="count"
+    ).reset_index()
+    stats["se"] = stats["std"] / np.sqrt(stats["n"])
+    stats = stats[stats["n"] >= min_n]
 
-    sc = ax.scatter(all_times, all_lwp, s=6, c=all_dist, cmap="viridis_r",
-                    vmin=0, vmax=radius_km, linewidths=0, alpha=0.8)
-    fig.colorbar(sc, ax=ax, pad=0.01, label="Distance au Dôme C (km)").ax.tick_params(labelsize=8)
-
-    ax.set_ylabel("LWP (g/m²)", fontsize=10)
-    ax.set_xlabel("Date (UTC)", fontsize=10)
-    if vmax is not None:
-        ax.set_ylim(0, vmax)
-    ax.grid(alpha=0.3)
-
+    # ── Figure 4 panneaux ─────────────────────────────────────
     period = f"{all_times[0]:%Y-%m-%d} → {all_times[-1]:%Y-%m-%d}"
-    ax.set_title(
+    bounds = np.arange(0, radius_km + 50, 50)
+    norm   = mcolors.BoundaryNorm(bounds, plt.cm.rainbow.N)
+
+    fig, axes = plt.subplots(4, 1, figsize=(16, 14), sharex=True,
+                             gridspec_kw={"height_ratios": [2, 1, 1, 1]})
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
         f"LWP — rayon {radius_km:.0f} km autour du Dôme C  |  "
-        f"{n_pts} profils  |  {period}",
-        fontsize=11, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+        f"{n_pts} footprints  |  {period}",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
     )
 
+    # panneau 0 : scatter brut
+    sc = axes[0].scatter(all_times, all_lwp, s=4, c=all_dist, cmap="rainbow",
+                         norm=norm, linewidths=0, alpha=0.8)
+    cb = fig.colorbar(sc, ax=axes[0], pad=0.01, label="Distance au Dôme C (km)")
+    cb.set_ticks(bounds)
+    cb.ax.tick_params(labelsize=7)
+    axes[0].set_ylabel("LWP (g/m²)", fontsize=9)
+    if vmax is not None:
+        axes[0].set_ylim(0, vmax)
+    axes[0].grid(alpha=0.3)
+    axes[0].set_title("Footprints bruts", fontsize=9, color=TITLE_COLOR)
+
+    # panneaux 1-3 : stats horaires
+    stat_panels = [
+        ("mean", "Moyenne (g/m²)",              "#1f77b4"),
+        ("std",  "Écart-type (g/m²)",           "#ff7f0e"),
+        ("se",   "Erreur sur la moyenne (g/m²)", "#2ca02c"),
+    ]
+    for ax, (col, label, color) in zip(axes[1:], stat_panels):
+        ax.bar(stats["hour_bin"], stats[col], width=1/24,
+               color=color, alpha=0.8, align="edge")
+        ax.set_ylabel(label, fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+
     n_days = (all_times[-1] - all_times[0]).days + 1
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
-    ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 12]))
+    for ax in axes:
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 12]))
+    axes[-1].set_xlabel("Date (UTC)", fontsize=10)
+
     plt.tight_layout()
     plt.show()
 
