@@ -1033,15 +1033,34 @@ def plot_lwp_timeseries_orbites(orbites: list,
     radius_km : float       rayon de sélection en km autour du Dôme C
     vmax      : float       limite haute de l'axe Y (g/m²), None = auto
     """
-    from datetime import timedelta as _td
+    from datetime import timedelta as _td, datetime as _dt
     from processing import haversine as _hav
 
-    _EPOCH = __import__("datetime").datetime(1970, 1, 1)
+    _EPOCH = _dt(1970, 1, 1)
+
+    def _parse_t0(orb):
+        # t0_utc présent (load_raw_orbits)
+        t0 = orb.get("t0_utc")
+        if isinstance(t0, _dt):
+            return t0
+        # Extraire la chaîne depuis start_day ou start_time
+        s = orb.get("start_day") or ""
+        if not s:
+            st = orb.get("start_time")
+            if st is not None:
+                s = st.decode() if isinstance(st, bytes) else str(st)
+        s = s.replace("UTC=", "").replace("Z", "").strip()[:19]
+        # Accepter "2025-12-05T11:13:38" et "2025-12-05 11:13:38"
+        s = s.replace("T", " ")
+        try:
+            return _dt.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
 
     all_times, all_lwp, all_dist = [], [], []
 
     for orb in orbites:
-        t0 = orb.get("t0_utc")
+        t0 = _parse_t0(orb)
         if t0 is None:
             continue
         lat  = np.asarray(orb["lat"],  dtype=np.float64)
@@ -1272,3 +1291,87 @@ def plot_circle_timeseries(ts: dict,
 
     plt.tight_layout()
     plt.show()
+
+
+from datetime import datetime, timedelta
+import matplotlib.dates as mdates
+from processing import haversine
+
+RADIUS_KM = 500
+EPOCH_2000 = datetime(2000, 1, 1, 0, 0, 0)   # "seconds since 2000-1-1 00:00:00"
+
+times_all, lwp_all, dist_all = [], [], []
+for orb in orbites:
+    lat  = np.asarray(orb["lat"],  dtype=float)
+    lon  = np.asarray(orb["lon"],  dtype=float)
+    lwp  = np.asarray(orb["lwp"],  dtype=float)
+    time = np.asarray(orb["time"], dtype=np.float64)   # secondes depuis 2000-01-01
+
+    dist = haversine(lat, lon, -75.1, 123.35)
+    mask = dist <= RADIUS_KM
+    if not np.any(mask):
+        continue
+
+    times_abs = [EPOCH_2000 + timedelta(seconds=float(t)) for t in time[mask]]
+    times_all.extend(times_abs)
+    lwp_all.append(np.where(lwp[mask] < 0, np.nan, lwp[mask]))
+    dist_all.append(dist[mask])
+
+lwp_all  = np.concatenate(lwp_all)
+dist_all = np.concatenate(dist_all)
+
+fig, ax = plt.subplots(figsize=(16, 5))
+sc = ax.scatter(times_all, lwp_all, s=6, c=dist_all, cmap="viridis_r",
+                vmin=0, vmax=RADIUS_KM, linewidths=0, alpha=0.8)
+fig.colorbar(sc, ax=ax, label="Distance au Dôme C (km)")
+ax.set_ylabel("LWP (g/m²)")
+ax.set_xlabel("Date (UTC)")
+ax.set_title(f"LWP vs temps — rayon {RADIUS_KM} km | {len(times_all)} profils")
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+df = pd.DataFrame({
+    "time": times_all,
+    "lwp":  lwp_all,          # LWP=0 inclus, NaN=invalide exclu
+}).dropna(subset=["lwp"])     # retire uniquement les NaN (valeurs invalides)
+
+df["hour_bin"] = df["time"].dt.floor("h")   # arrondi à l'heure inférieure
+
+# ── Statistiques par bin horaire ──
+stats = df.groupby("hour_bin")["lwp"].agg(
+    mean="mean",
+    std="std",
+    n="count",
+).reset_index()
+stats["se"] = stats["std"] / np.sqrt(stats["n"])   # erreur sur la moyenne
+
+# ── Figure ──
+fig, axes = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
+fig.patch.set_facecolor("white")
+fig.suptitle(
+    f"LWP horaire — rayon {RADIUS_KM} km autour du Dôme C (LWP=0 inclus)",
+    fontsize=12, fontweight="bold", color="#003399"
+)
+
+labels = ["Moyenne (g/m²)", "Écart-type (g/m²)", "Erreur sur la moyenne (g/m²)"]
+cols   = ["mean", "std", "se"]
+colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+
+for ax, col, label, color in zip(axes, cols, labels, colors):
+    ax.bar(stats["hour_bin"], stats[col], width=1/24, color=color,
+           alpha=0.8, align="edge")
+    ax.set_ylabel(label, fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+
+n_days = (stats["hour_bin"].iloc[-1] - stats["hour_bin"].iloc[0]).days + 1
+axes[-1].xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+axes[-1].set_xlabel("Date (UTC)", fontsize=10)
+
+plt.tight_layout()
+plt.show()
+
+print(f"Bins horaires : {len(stats)}")
+print(stats[["hour_bin", "mean", "std", "se", "n"]].head(10).to_string(index=False))
