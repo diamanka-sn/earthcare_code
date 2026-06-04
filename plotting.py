@@ -1045,33 +1045,29 @@ def plot_lwp_hourly_stats(times: list, lwp: np.ndarray,
     stats["se"] = stats["std"] / np.sqrt(stats["n"])
     stats = stats[stats["n"] >= min_n]
 
-    fig, axes = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
+    fig, ax = plt.subplots(figsize=(16, 5))
     fig.patch.set_facecolor("white")
-    fig.suptitle(
+    ax.set_title(
         f"LWP horaire — rayon {radius_km:.0f} km autour du Dôme C  "
         f"(LWP=0 inclus, n≥{min_n})",
         fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
     )
 
-    panels = [
-        ("mean", "Moyenne (g/m²)",              "#1f77b4"),
-        ("std",  "Écart-type (g/m²)",           "#ff7f0e"),
-        ("se",   "Erreur sur la moyenne (g/m²)", "#2ca02c"),
-    ]
-    for ax, (col, label, color) in zip(axes, panels):
-        ax.scatter(stats["hour_bin"], stats[col],
-                   s=18, color=color, alpha=0.85, linewidths=0)
-        ax.set_ylabel(label, fontsize=9)
-        ax.grid(alpha=0.3)
+    ax.errorbar(stats["hour_bin"], stats["mean"], yerr=stats["se"],
+                fmt="o", markersize=5, color="#1f77b4",
+                ecolor="#1f77b4", elinewidth=1.2, capsize=3, capthick=1.2,
+                linewidth=0, alpha=0.85)
+    ax.set_ylabel("LWP (g/m²)", fontsize=10)
+    ax.set_xlabel("Date (UTC)", fontsize=10)
+    ax.grid(alpha=0.3)
 
     n_days = (stats["hour_bin"].iloc[-1] - stats["hour_bin"].iloc[0]).days + 1
     interval_d = max(1, n_days // 10)
-    for ax in axes:
-        ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
-        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
-        ax.xaxis.set_minor_formatter(mdates.DateFormatter("%Hh"))
-        ax.tick_params(axis="x", which="minor", labelsize=6, labelcolor="grey")
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+    ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
+    ax.xaxis.set_minor_formatter(mdates.DateFormatter("%Hh"))
+    ax.tick_params(axis="x", which="minor", labelsize=6, labelcolor="grey")
     axes[-1].set_xlabel("Date (UTC)", fontsize=10)
 
     plt.tight_layout()
@@ -1110,7 +1106,7 @@ def plot_lwp_timeseries_orbites(orbites: list,
         time = np.asarray(orb["time"], dtype=np.float64)
 
         dist = _hav(lat, lon, LAT_REF, LON_REF)
-        mask = (dist <= radius_km) & (time > 0.0)
+        mask = (dist <= radius_km) & (time > 817862400)
         if not np.any(mask):
             continue
 
@@ -1135,54 +1131,50 @@ def plot_lwp_timeseries_orbites(orbites: list,
     stats["se"] = stats["std"] / np.sqrt(stats["n"])
     stats = stats[stats["n"] >= min_n]
 
-    # ── Figure 4 panneaux ─────────────────────────────────────
+    # ── Figure ────────────────────────────────────────────────
     period = f"{all_times[0]:%Y-%m-%d} → {all_times[-1]:%Y-%m-%d}"
-    bounds = np.arange(0, radius_km + 50, 50)
-    norm   = mcolors.BoundaryNorm(bounds, plt.cm.rainbow.N)
 
-    fig, axes = plt.subplots(4, 1, figsize=(16, 14), sharex=True,
-                             gridspec_kw={"height_ratios": [2, 1, 1, 1]})
+    fig, ax = plt.subplots(figsize=(16, 5))
     fig.patch.set_facecolor("white")
-    fig.suptitle(
-        f"LWP — rayon {radius_km:.0f} km autour du Dôme C  |  "
+    ax.set_title(
+        f"LWP — {radius_km:.0f} km radius around Dome C  |  "
         f"{n_pts} footprints  |  {period}",
         fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
     )
 
-    # panneau 0 : scatter brut
-    sc = axes[0].scatter(all_times, all_lwp, s=4, c=all_dist, cmap="rainbow",
-                         norm=norm, linewidths=0, alpha=0.8)
-    cb = fig.colorbar(sc, ax=axes[0], pad=0.01, label="Distance au Dôme C (km)")
-    cb.set_ticks(bounds)
-    cb.ax.tick_params(labelsize=7)
-    axes[0].set_ylabel("LWP (g/m²)", fontsize=9)
+    # color by overpass hour
+    hours        = stats["hour_bin"].dt.hour.values
+    unique_hours = sorted(set(hours))
+    cmap_hours   = plt.cm.get_cmap("tab10", len(unique_hours))
+    hour_colors  = {h: cmap_hours(i) for i, h in enumerate(unique_hours)}
+
+    for _, row in stats.iterrows():
+        c = hour_colors[row["hour_bin"].hour]
+        ax.errorbar(row["hour_bin"], row["mean"], yerr=row["se"],
+                    fmt="o", markersize=5, color=c,
+                    ecolor=c, elinewidth=1.2, capsize=3, capthick=1.2,
+                    linewidth=0, alpha=0.85)
+
+    handles = [plt.Line2D([0], [0], marker="o", color="w",
+                           markerfacecolor=hour_colors[h], markersize=7,
+                           label=f"{h:02d}h UTC")
+               for h in unique_hours]
+    ax.legend(handles=handles, title="Overpass hour",
+              fontsize=8, title_fontsize=8, loc="upper right")
+
+    ax.set_ylabel("LWP (g/m²)", fontsize=10)
+    ax.set_xlabel("Date (UTC)", fontsize=10)
     if vmax is not None:
-        axes[0].set_ylim(0, vmax)
-    axes[0].grid(alpha=0.3)
-    axes[0].set_title("Footprints bruts", fontsize=9, color=TITLE_COLOR)
-
-    # panneaux 1-3 : stats horaires
-    stat_panels = [
-        ("mean", "Moyenne (g/m²)",              "#1f77b4"),
-        ("std",  "Écart-type (g/m²)",           "#ff7f0e"),
-        ("se",   "Erreur sur la moyenne (g/m²)", "#2ca02c"),
-    ]
-    for ax, (col, label, color) in zip(axes[1:], stat_panels):
-        ax.scatter(stats["hour_bin"], stats[col],
-                   s=18, color=color, alpha=0.85, linewidths=0)
-        ax.set_ylabel(label, fontsize=9)
-        ax.grid(alpha=0.3)
-
-    n_days = (all_times[-1] - all_times[0]).days + 1
-    interval_d = max(1, n_days // 10)
-    for ax in axes:
-        ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
-        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
-        ax.xaxis.set_minor_formatter(mdates.DateFormatter("%Hh"))
-        ax.tick_params(axis="x", which="minor", labelsize=6, labelcolor="grey")
-    axes[-1].set_xlabel("Date (UTC)", fontsize=10)
-
+        ax.set_ylim(0, vmax)
+    n_days     = (all_times[-1] - all_times[0]).days + 1
+    interval_d = max(1, n_days // 20)
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d"))
+    ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+    ax.tick_params(axis="x", which="minor", length=3, color="grey")
+    # plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right", fontsize=8)
+    print(f"Hourly bins : {len(stats)}")
+    print(stats[["hour_bin", "mean", "std", "se", "n"]].to_string(index=False))
     plt.tight_layout()
     plt.show()
 
@@ -1360,85 +1352,85 @@ def plot_circle_timeseries(ts: dict,
     plt.show()
 
 
-from datetime import datetime, timedelta
-import matplotlib.dates as mdates
-from processing import haversine
+# from datetime import datetime, timedelta
+# import matplotlib.dates as mdates
+# from processing import haversine
 
-RADIUS_KM = 500
-EPOCH_2000 = datetime(2000, 1, 1, 0, 0, 0)   # "seconds since 2000-1-1 00:00:00"
+# RADIUS_KM = 500
+# EPOCH_2000 = datetime(2000, 1, 1, 0, 0, 0)   # "seconds since 2000-1-1 00:00:00"
 
-times_all, lwp_all, dist_all = [], [], []
-for orb in orbites:
-    lat  = np.asarray(orb["lat"],  dtype=float)
-    lon  = np.asarray(orb["lon"],  dtype=float)
-    lwp  = np.asarray(orb["lwp"],  dtype=float)
-    time = np.asarray(orb["time"], dtype=np.float64)   # secondes depuis 2000-01-01
+# times_all, lwp_all, dist_all = [], [], []
+# for orb in orbites:
+#     lat  = np.asarray(orb["lat"],  dtype=float)
+#     lon  = np.asarray(orb["lon"],  dtype=float)
+#     lwp  = np.asarray(orb["lwp"],  dtype=float)
+#     time = np.asarray(orb["time"], dtype=np.float64)   # secondes depuis 2000-01-01
 
-    dist = haversine(lat, lon, -75.1, 123.35)
-    mask = dist <= RADIUS_KM
-    if not np.any(mask):
-        continue
+#     dist = haversine(lat, lon, -75.1, 123.35)
+#     mask = dist <= RADIUS_KM
+#     if not np.any(mask):
+#         continue
 
-    times_abs = [EPOCH_2000 + timedelta(seconds=float(t)) for t in time[mask]]
-    times_all.extend(times_abs)
-    lwp_all.append(np.where(lwp[mask] < 0, np.nan, lwp[mask]))
-    dist_all.append(dist[mask])
+#     times_abs = [EPOCH_2000 + timedelta(seconds=float(t)) for t in time[mask]]
+#     times_all.extend(times_abs)
+#     lwp_all.append(np.where(lwp[mask] < 0, np.nan, lwp[mask]))
+#     dist_all.append(dist[mask])
 
-lwp_all  = np.concatenate(lwp_all)
-dist_all = np.concatenate(dist_all)
+# lwp_all  = np.concatenate(lwp_all)
+# dist_all = np.concatenate(dist_all)
 
-fig, ax = plt.subplots(figsize=(16, 5))
-sc = ax.scatter(times_all, lwp_all, s=6, c=dist_all, cmap="viridis_r",
-                vmin=0, vmax=RADIUS_KM, linewidths=0, alpha=0.8)
-fig.colorbar(sc, ax=ax, label="Distance au Dôme C (km)")
-ax.set_ylabel("LWP (g/m²)")
-ax.set_xlabel("Date (UTC)")
-ax.set_title(f"LWP vs temps — rayon {RADIUS_KM} km | {len(times_all)} profils")
-ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
-ax.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
+# fig, ax = plt.subplots(figsize=(16, 5))
+# sc = ax.scatter(times_all, lwp_all, s=6, c=dist_all, cmap="viridis_r",
+#                 vmin=0, vmax=RADIUS_KM, linewidths=0, alpha=0.8)
+# fig.colorbar(sc, ax=ax, label="Distance au Dôme C (km)")
+# ax.set_ylabel("LWP (g/m²)")
+# ax.set_xlabel("Date (UTC)")
+# ax.set_title(f"LWP vs temps — rayon {RADIUS_KM} km | {len(times_all)} profils")
+# ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+# ax.grid(alpha=0.3)
+# plt.tight_layout()
+# plt.show()
 
-df = pd.DataFrame({
-    "time": times_all,
-    "lwp":  lwp_all,          # LWP=0 inclus, NaN=invalide exclu
-}).dropna(subset=["lwp"])     # retire uniquement les NaN (valeurs invalides)
+# df = pd.DataFrame({
+#     "time": times_all,
+#     "lwp":  lwp_all,          # LWP=0 inclus, NaN=invalide exclu
+# }).dropna(subset=["lwp"])     # retire uniquement les NaN (valeurs invalides)
 
-df["hour_bin"] = df["time"].dt.floor("h")   # arrondi à l'heure inférieure
+# df["hour_bin"] = df["time"].dt.floor("h")   # arrondi à l'heure inférieure
 
-# ── Statistiques par bin horaire ──
-stats = df.groupby("hour_bin")["lwp"].agg(
-    mean="mean",
-    std="std",
-    n="count",
-).reset_index()
-stats["se"] = stats["std"] / np.sqrt(stats["n"])   # erreur sur la moyenne
+# # ── Statistiques par bin horaire ──
+# stats = df.groupby("hour_bin")["lwp"].agg(
+#     mean="mean",
+#     std="std",
+#     n="count",
+# ).reset_index()
+# stats["se"] = stats["std"] / np.sqrt(stats["n"])   # erreur sur la moyenne
 
-# ── Figure ──
-fig, axes = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
-fig.patch.set_facecolor("white")
-fig.suptitle(
-    f"LWP horaire — rayon {RADIUS_KM} km autour du Dôme C (LWP=0 inclus)",
-    fontsize=12, fontweight="bold", color="#003399"
-)
+# # ── Figure ──
+# fig, axes = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
+# fig.patch.set_facecolor("white")
+# fig.suptitle(
+#     f"LWP horaire — rayon {RADIUS_KM} km autour du Dôme C (LWP=0 inclus)",
+#     fontsize=12, fontweight="bold", color="#003399"
+# )
 
-labels = ["Moyenne (g/m²)", "Écart-type (g/m²)", "Erreur sur la moyenne (g/m²)"]
-cols   = ["mean", "std", "se"]
-colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+# labels = ["Moyenne (g/m²)", "Écart-type (g/m²)", "Erreur sur la moyenne (g/m²)"]
+# cols   = ["mean", "std", "se"]
+# colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
 
-for ax, col, label, color in zip(axes, cols, labels, colors):
-    ax.bar(stats["hour_bin"], stats[col], width=1/24, color=color,
-           alpha=0.8, align="edge")
-    ax.set_ylabel(label, fontsize=9)
-    ax.grid(axis="y", alpha=0.3)
+# for ax, col, label, color in zip(axes, cols, labels, colors):
+#     ax.bar(stats["hour_bin"], stats[col], width=1/24, color=color,
+#            alpha=0.8, align="edge")
+#     ax.set_ylabel(label, fontsize=9)
+#     ax.grid(axis="y", alpha=0.3)
 
-n_days = (stats["hour_bin"].iloc[-1] - stats["hour_bin"].iloc[0]).days + 1
-axes[-1].xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
-axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
-axes[-1].set_xlabel("Date (UTC)", fontsize=10)
+# n_days = (stats["hour_bin"].iloc[-1] - stats["hour_bin"].iloc[0]).days + 1
+# axes[-1].xaxis.set_major_locator(mdates.DayLocator(interval=max(1, n_days // 10)))
+# axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b\n%Y"))
+# axes[-1].set_xlabel("Date (UTC)", fontsize=10)
 
-plt.tight_layout()
-plt.show()
+# plt.tight_layout()
+# plt.show()
 
-print(f"Bins horaires : {len(stats)}")
-print(stats[["hour_bin", "mean", "std", "se", "n"]].head(10).to_string(index=False))
+# print(f"Bins horaires : {len(stats)}")
+# print(stats[["hour_bin", "mean", "std", "se", "n"]].head(10).to_string(index=False))
