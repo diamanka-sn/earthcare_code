@@ -1152,6 +1152,10 @@ def plot_lwp_timeseries_orbites(orbites: list,
     stats["n_total"] = stats["n_total"].astype(int)
     stats = stats[stats["n_pos"] >= min_n]
 
+    # bins où le satellite est passé mais LWP=0 strictement (pas dans stats)
+    bins_zero = n_total_per_bin.reset_index()
+    bins_zero = bins_zero[~bins_zero["hour_bin"].isin(stats["hour_bin"])]
+
     # ── Figure ────────────────────────────────────────────────
     period = f"{all_times[0]:%Y-%m-%d} → {all_times[-1]:%Y-%m-%d}"
 
@@ -1164,11 +1168,12 @@ def plot_lwp_timeseries_orbites(orbites: list,
     )
 
     # color by overpass hour
-    hours        = stats["hour_bin"].dt.hour.values
-    unique_hours = sorted(set(hours))
-    cmap_hours   = plt.cm.get_cmap("tab10", len(unique_hours))
-    hour_colors  = {h: cmap_hours(i) for i, h in enumerate(unique_hours)}
+    all_hours    = sorted(set(stats["hour_bin"].dt.hour) |
+                          set(bins_zero["hour_bin"].dt.hour))
+    cmap_hours   = plt.cm.get_cmap("tab10", len(all_hours))
+    hour_colors  = {h: cmap_hours(i) for i, h in enumerate(all_hours)}
 
+    # bins LWP > 0 : moyenne ± erreur
     for _, row in stats.iterrows():
         c = hour_colors[row["hour_bin"].hour]
         ax.errorbar(row["hour_bin"], row["mean"], yerr=row["se"],
@@ -1176,18 +1181,31 @@ def plot_lwp_timeseries_orbites(orbites: list,
                     ecolor=c, elinewidth=1.2, capsize=3, capthick=1.2,
                     linewidth=0, alpha=0.85)
 
+    # bins LWP = 0 : passage sans nuage d'eau surfondue
+    for _, row in bins_zero.iterrows():
+        c = hour_colors[row["hour_bin"].hour]
+        ax.scatter(row["hour_bin"], 0, marker="v", s=30, color=c,
+                   linewidths=0.5, edgecolors="grey", alpha=0.7, zorder=3)
+
     if vmax is not None:
         ax.set_ylim(0, vmax)
 
-    handles = [plt.Line2D([0], [0], marker="o", color="w",
-                           markerfacecolor=hour_colors[h], markersize=7,
-                           label=f"{h:02d}h UTC")
-               for h in unique_hours]
+    handles = ([plt.Line2D([0], [0], marker="o", color="w",
+                            markerfacecolor=hour_colors[h], markersize=7,
+                            label=f"{h:02d}h UTC")
+                for h in all_hours] +
+               [plt.Line2D([0], [0], marker="v", color="w",
+                            markerfacecolor="grey", markersize=7,
+                            label="No supercooled cloud")])
     ax.legend(handles=handles, title="Overpass hour",
               fontsize=8, title_fontsize=8, loc="upper right")
 
     ax.set_ylabel("LWP (g/m²)", fontsize=10)
     ax.set_xlabel("Date (UTC)", fontsize=10)
+
+    import calendar
+    last_day = calendar.monthrange(all_times[-1].year, all_times[-1].month)[1]
+    ax.set_xlim(all_times[0].replace(day=1), all_times[-1].replace(day=last_day))
 
     n_days     = (all_times[-1] - all_times[0]).days + 1
     interval_d = max(1, n_days // 20)
@@ -1261,9 +1279,17 @@ def plot_cloud_fraction(stats: "pd.DataFrame",
     ax2.set_ylim(0, 105)
     ax2.legend(fontsize=8, loc="upper right")
 
-    n_days     = (s["hour_bin"].iloc[-1] - s["hour_bin"].iloc[0]).days + 1
+    import calendar
+    t_start  = s["hour_bin"].iloc[0]
+    t_end    = s["hour_bin"].iloc[-1]
+    last_day = calendar.monthrange(t_end.year, t_end.month)[1]
+    x_min    = t_start.replace(day=1)
+    x_max    = t_end.replace(day=last_day)
+
+    n_days     = (t_end - t_start).days + 1
     interval_d = max(1, n_days // 20)
     for ax in (ax1, ax2):
+        ax.set_xlim(x_min, x_max)
         ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%d"))
         ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
