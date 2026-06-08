@@ -1136,7 +1136,7 @@ def plot_lwp_timeseries_orbites(orbites: list,
           f"({100 * n_pts / n_total_all:.1f}%)")
 
     # ── Statistiques horaires ──────────────────────────────────
-    # n_pos : obs LWP > 0 par bin
+    # n_pos : obs LWP > 0 par bin (avant filtre min_n)
     df = pd.DataFrame({"time": all_times, "lwp": all_lwp}).dropna(subset=["lwp"])
     df["hour_bin"] = pd.to_datetime(df["time"]).dt.floor("h")
     stats = df.groupby("hour_bin")["lwp"].agg(
@@ -1148,12 +1148,17 @@ def plot_lwp_timeseries_orbites(orbites: list,
     df_total = pd.DataFrame({"time": all_times_total})
     df_total["hour_bin"] = pd.to_datetime(df_total["time"]).dt.floor("h")
     n_total_per_bin = df_total.groupby("hour_bin").size().rename("n_total")
+    n_pos_per_bin   = df.groupby("hour_bin").size().rename("n_pos_all")  # avant filtre
+
     stats = stats.merge(n_total_per_bin, on="hour_bin", how="left").fillna(0)
     stats["n_total"] = stats["n_total"].astype(int)
     stats = stats[stats["n_pos"] >= min_n]
 
-    # bins où le satellite est passé mais LWP=0 strictement (pas dans stats)
-    bins_zero = n_total_per_bin.reset_index()
+    # bins où le satellite est passé mais exclus des stats (LWP=0 ou n_pos < min_n)
+    bins_zero = (n_total_per_bin.reset_index()
+                 .merge(n_pos_per_bin.reset_index(), on="hour_bin", how="left")
+                 .fillna(0))
+    bins_zero["n_pos_all"] = bins_zero["n_pos_all"].astype(int)
     bins_zero = bins_zero[~bins_zero["hour_bin"].isin(stats["hour_bin"])]
 
     # ── Figure ────────────────────────────────────────────────
@@ -1205,7 +1210,9 @@ def plot_lwp_timeseries_orbites(orbites: list,
 
     import calendar
     last_day = calendar.monthrange(all_times[-1].year, all_times[-1].month)[1]
-    ax.set_xlim(all_times[0].replace(day=1), all_times[-1].replace(day=last_day))
+    pad = _td(hours=12)
+    ax.set_xlim(all_times[0].replace(day=1) - pad,
+                all_times[-1].replace(day=last_day) + pad)
 
     n_days     = (all_times[-1] - all_times[0]).days + 1
     interval_d = max(1, n_days // 20)
@@ -1214,11 +1221,322 @@ def plot_lwp_timeseries_orbites(orbites: list,
     ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
     ax.tick_params(axis="x", which="minor", length=3, color="grey")
 
-    print(f"Hourly bins : {len(stats)}")
-    print(stats[["hour_bin", "mean", "std", "se", "n_pos", "n_total"]].to_string(index=False))
+    # ajouter les bins sans nuage avec leur vrai n_pos et mean=0
+    zero_rows = pd.DataFrame({
+        "hour_bin": bins_zero["hour_bin"].values,
+        "mean":     0.0,
+        "std":      0.0,
+        "se":       0.0,
+        "n_pos":    bins_zero["n_pos_all"].values,
+        "n_total":  bins_zero["n_total"].values,
+    })
+    stats_full = pd.concat([stats, zero_rows], ignore_index=True).sort_values("hour_bin")
+
+    print(f"Hourly bins (LWP>0) : {len(stats)}  |  bins LWP=0 : {len(bins_zero)}")
+    print(stats_full[["hour_bin", "mean", "std", "se", "n_pos", "n_total"]].to_string(index=False))
     plt.tight_layout()
     plt.show()
-    return stats
+    return stats_full
+
+
+def plot_lwp_timeseries_orbites_daily(orbites: list,
+                                        radius_km: float = 500.0,
+                                        vmax: float | None = None,
+                                        min_n: int = 2) -> "pd.DataFrame":
+    """LWP vs temps + statistiques journalières (moyenne/std/erreur), bins de 24h.
+
+    Identique à plot_lwp_timeseries_orbites mais avec des bins d'un jour
+    (au lieu d'une heure).
+
+    Parameters
+    ----------
+    orbites   : list[dict]  sortie de prepare_multi_orbits()
+    radius_km : float       rayon de sélection en km autour du Dôme C
+    vmax      : float       limite haute de l'axe Y scatter (g/m²)
+    min_n     : int         bins journaliers avec moins de min_n points ignorés
+    """
+    import pandas as pd
+    from datetime import timedelta as _td, datetime as _dt
+    from processing import haversine as _hav
+
+    EPOCH_2000 = _dt(2000, 1, 1)
+
+    all_times, all_lwp, all_dist = [], [], []
+    all_times_total = []   # tous les footprints valides (LWP >= 0)
+
+    for orb in orbites:
+        lat  = np.asarray(orb["lat"],  dtype=np.float64)
+        lon  = np.asarray(orb["lon"],  dtype=np.float64)
+        lwp  = np.asarray(orb["lwp"],  dtype=np.float64)
+        time = np.asarray(orb["time"], dtype=np.float64)
+
+        dist      = _hav(lat, lon, LAT_REF, LON_REF)
+        lwp_clean = np.where(lwp < 0, np.nan, lwp)
+
+        mask_total = (dist <= radius_km) & (time > 817862400)
+        if not np.any(mask_total):
+            continue
+        all_times_total.extend(
+            [EPOCH_2000 + _td(seconds=float(t)) for t in time[mask_total]]
+        )
+
+        mask_lwp = mask_total & (lwp_clean > 0.0)
+        if not np.any(mask_lwp):
+            continue
+        all_times.extend([EPOCH_2000 + _td(seconds=float(t)) for t in time[mask_lwp]])
+        all_lwp.append(lwp_clean[mask_lwp])
+        all_dist.append(dist[mask_lwp])
+
+    if not all_times:
+        print(f"Aucun point dans le rayon {radius_km} km.")
+        return
+
+    all_lwp  = np.concatenate(all_lwp)
+    all_dist = np.concatenate(all_dist)
+    n_pts        = len(all_times)
+    n_total_all  = len(all_times_total)
+    print(f"Total footprints in radius : {n_total_all}")
+    print(f"Footprints with LWP > 0   : {n_pts}  "
+          f"({100 * n_pts / n_total_all:.1f}%)")
+
+    # ── Statistiques journalières (bins de 24h) ────────────────
+    # n_pos : obs LWP > 0 par bin (avant filtre min_n)
+    df = pd.DataFrame({"time": all_times, "lwp": all_lwp}).dropna(subset=["lwp"])
+    df["day_bin"] = pd.to_datetime(df["time"]).dt.floor("D")
+    stats = df.groupby("day_bin")["lwp"].agg(
+        mean="mean", std="std", n_pos="count"
+    ).reset_index()
+    stats["se"] = stats["std"] / np.sqrt(stats["n_pos"])
+
+    # n_total : obs totales (LWP >= 0) par bin
+    df_total = pd.DataFrame({"time": all_times_total})
+    df_total["day_bin"] = pd.to_datetime(df_total["time"]).dt.floor("D")
+    n_total_per_bin = df_total.groupby("day_bin").size().rename("n_total")
+    n_pos_per_bin   = df.groupby("day_bin").size().rename("n_pos_all")  # avant filtre
+
+    stats = stats.merge(n_total_per_bin, on="day_bin", how="left").fillna(0)
+    stats["n_total"] = stats["n_total"].astype(int)
+    stats = stats[stats["n_pos"] >= min_n]
+
+    # bins où le satellite est passé mais exclus des stats (LWP=0 ou n_pos < min_n)
+    bins_zero = (n_total_per_bin.reset_index()
+                 .merge(n_pos_per_bin.reset_index(), on="day_bin", how="left")
+                 .fillna(0))
+    bins_zero["n_pos_all"] = bins_zero["n_pos_all"].astype(int)
+    bins_zero = bins_zero[~bins_zero["day_bin"].isin(stats["day_bin"])]
+
+    # ── Figure ────────────────────────────────────────────────
+    period = f"{all_times[0]:%Y-%m-%d} to {all_times[-1]:%Y-%m-%d}"
+
+    fig, ax = plt.subplots(figsize=(16, 5))
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        f"LWP - {radius_km:.0f} km radius around Dome C — daily bins  |  "
+        f"{n_pts} footprints  |  {period}",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    color_pos  = "#1f77b4"
+    color_zero = "grey"
+
+    # bins LWP > 0 : moyenne ± erreur
+    for _, row in stats.iterrows():
+        ax.errorbar(row["day_bin"], row["mean"], yerr=row["se"],
+                    fmt="o", markersize=5, color=color_pos,
+                    ecolor=color_pos, elinewidth=1.2, capsize=3, capthick=1.2,
+                    linewidth=0, alpha=0.85)
+
+    # bins LWP = 0 : passage(s) sans nuage d'eau surfondue
+    for _, row in bins_zero.iterrows():
+        ax.scatter(row["day_bin"], 0, marker="v", s=30, color=color_zero,
+                   linewidths=0.5, edgecolors="grey", alpha=0.7, zorder=3)
+
+    if vmax is not None:
+        ax.set_ylim(0, vmax)
+
+    handles = [
+        plt.Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=color_pos, markersize=7,
+                   label="Daily mean ± SE (LWP > 0)"),
+        plt.Line2D([0], [0], marker="v", color="w",
+                   markerfacecolor=color_zero, markersize=7,
+                   label="No supercooled cloud"),
+    ]
+    ax.legend(handles=handles, fontsize=8, loc="upper right")
+
+    ax.set_ylabel("LWP (g/m²)", fontsize=10)
+    ax.set_xlabel("Date (UTC)", fontsize=10)
+
+    import calendar
+    last_day = calendar.monthrange(all_times[-1].year, all_times[-1].month)[1]
+    pad = _td(hours=12)
+    ax.set_xlim(all_times[0].replace(day=1) - pad,
+                all_times[-1].replace(day=last_day) + pad)
+
+    n_days     = (all_times[-1] - all_times[0]).days + 1
+    interval_d = max(1, n_days // 20)
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d"))
+
+    # ajouter les bins sans nuage avec leur vrai n_pos et mean=0
+    zero_rows = pd.DataFrame({
+        "day_bin": bins_zero["day_bin"].values,
+        "mean":    0.0,
+        "std":     0.0,
+        "se":      0.0,
+        "n_pos":   bins_zero["n_pos_all"].values,
+        "n_total": bins_zero["n_total"].values,
+    })
+    stats_full = pd.concat([stats, zero_rows], ignore_index=True).sort_values("day_bin")
+
+    print(f"Daily bins (LWP>0) : {len(stats)}  |  bins LWP=0 : {len(bins_zero)}")
+    print(stats_full[["day_bin", "mean", "std", "se", "n_pos", "n_total"]].to_string(index=False))
+    plt.tight_layout()
+    plt.show()
+    return stats_full
+
+
+def plot_lwp_diurnal_cycle(orbites: list,
+                            radius_km: float = 500.0,
+                            vmax: float | None = None,
+                            min_n: int = 2) -> "pd.DataFrame":
+    """Cycle diurne du LWP : bins d'une heure (0h-23h) combinés sur tout le mois.
+
+    Contrairement à plot_lwp_timeseries_orbites (bins horaires datés), ici
+    on regroupe toutes les observations par heure UTC du jour (00h, 01h, ...
+    23h), sans distinguer la date — ex. tous les passages à 00h du mois sont
+    combinés dans un seul bin.
+
+    Parameters
+    ----------
+    orbites   : list[dict]  sortie de prepare_multi_orbits()
+    radius_km : float       rayon de sélection en km autour du Dôme C
+    vmax      : float       limite haute de l'axe Y (g/m²)
+    min_n     : int         heures avec moins de min_n points LWP>0 ignorées
+    """
+    import pandas as pd
+    from datetime import timedelta as _td, datetime as _dt
+    from processing import haversine as _hav
+
+    EPOCH_2000 = _dt(2000, 1, 1)
+
+    all_times, all_lwp = [], []
+    all_times_total = []   # tous les footprints valides (LWP >= 0)
+
+    for orb in orbites:
+        lat  = np.asarray(orb["lat"],  dtype=np.float64)
+        lon  = np.asarray(orb["lon"],  dtype=np.float64)
+        lwp  = np.asarray(orb["lwp"],  dtype=np.float64)
+        time = np.asarray(orb["time"], dtype=np.float64)
+
+        dist      = _hav(lat, lon, LAT_REF, LON_REF)
+        lwp_clean = np.where(lwp < 0, np.nan, lwp)
+
+        mask_total = (dist <= radius_km) & (time > 817862400)
+        if not np.any(mask_total):
+            continue
+        all_times_total.extend(
+            [EPOCH_2000 + _td(seconds=float(t)) for t in time[mask_total]]
+        )
+
+        mask_lwp = mask_total & (lwp_clean > 0.0)
+        if not np.any(mask_lwp):
+            continue
+        all_times.extend([EPOCH_2000 + _td(seconds=float(t)) for t in time[mask_lwp]])
+        all_lwp.append(lwp_clean[mask_lwp])
+
+    if not all_times:
+        print(f"Aucun point dans le rayon {radius_km} km.")
+        return
+
+    all_lwp = np.concatenate(all_lwp)
+    n_pts       = len(all_times)
+    n_total_all = len(all_times_total)
+    print(f"Total footprints in radius : {n_total_all}")
+    print(f"Footprints with LWP > 0   : {n_pts}  "
+          f"({100 * n_pts / n_total_all:.1f}%)")
+
+    # ── Statistiques par heure du jour (0-23), tous jours confondus ──
+    df = pd.DataFrame({"time": all_times, "lwp": all_lwp}).dropna(subset=["lwp"])
+    df["hour"] = pd.to_datetime(df["time"]).dt.hour
+    stats = df.groupby("hour")["lwp"].agg(
+        mean="mean", std="std", n_pos="count"
+    ).reset_index()
+    stats["se"] = stats["std"] / np.sqrt(stats["n_pos"])
+
+    df_total = pd.DataFrame({"time": all_times_total})
+    df_total["hour"] = pd.to_datetime(df_total["time"]).dt.hour
+    n_total_per_hour = df_total.groupby("hour").size().rename("n_total")
+    n_pos_per_hour   = df.groupby("hour").size().rename("n_pos_all")  # avant filtre
+
+    stats = stats.merge(n_total_per_hour, on="hour", how="left").fillna(0)
+    stats["n_total"] = stats["n_total"].astype(int)
+    stats = stats[stats["n_pos"] >= min_n]
+
+    # heures où le satellite est passé mais exclues (LWP=0 ou n_pos < min_n)
+    bins_zero = (n_total_per_hour.reset_index()
+                 .merge(n_pos_per_hour.reset_index(), on="hour", how="left")
+                 .fillna(0))
+    bins_zero["n_pos_all"] = bins_zero["n_pos_all"].astype(int)
+    bins_zero = bins_zero[~bins_zero["hour"].isin(stats["hour"])]
+
+    # ── Figure ────────────────────────────────────────────────
+    period = f"{all_times[0]:%Y-%m-%d} → {all_times[-1]:%Y-%m-%d}"
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        f"LWP diurnal cycle — {radius_km:.0f} km radius around Dome C  |  "
+        f"{n_pts} footprints  |  {period}",
+        fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
+    )
+
+    color_pos  = "#1f77b4"
+    color_zero = "grey"
+
+    ax.errorbar(stats["hour"], stats["mean"], yerr=stats["se"],
+                fmt="o", markersize=6, color=color_pos,
+                ecolor=color_pos, elinewidth=1.2, capsize=3, capthick=1.2,
+                linewidth=0, alpha=0.85)
+
+    for _, row in bins_zero.iterrows():
+        ax.scatter(row["hour"], 0, marker="v", s=30, color=color_zero,
+                   linewidths=0.5, edgecolors="grey", alpha=0.7, zorder=3)
+
+    if vmax is not None:
+        ax.set_ylim(0, vmax)
+
+    handles = [
+        plt.Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=color_pos, markersize=7,
+                   label="Hourly mean ± SE (LWP > 0)"),
+        plt.Line2D([0], [0], marker="v", color="w",
+                   markerfacecolor=color_zero, markersize=7,
+                   label="No supercooled cloud"),
+    ]
+    ax.legend(handles=handles, fontsize=8, loc="upper right")
+
+    ax.set_xlabel("Hour of day (UTC)", fontsize=10)
+    ax.set_ylabel("LWP (g/m²)", fontsize=10)
+    ax.set_xlim(-0.5, 23.5)
+    ax.set_xticks(range(0, 24))
+
+    # heures sans nuage avec leur vrai n_pos et mean=0
+    zero_rows = pd.DataFrame({
+        "hour":    bins_zero["hour"].values,
+        "mean":    0.0,
+        "std":     0.0,
+        "se":      0.0,
+        "n_pos":   bins_zero["n_pos_all"].values,
+        "n_total": bins_zero["n_total"].values,
+    })
+    stats_full = pd.concat([stats, zero_rows], ignore_index=True).sort_values("hour")
+
+    print(f"Hours with cloud (LWP>0) : {len(stats)}  |  hours LWP=0 : {len(bins_zero)}")
+    print(stats_full[["hour", "mean", "std", "se", "n_pos", "n_total"]].to_string(index=False))
+    plt.tight_layout()
+    plt.show()
+    return stats_full
 
 
 def plot_cloud_fraction(stats: "pd.DataFrame",
@@ -1241,15 +1559,20 @@ def plot_cloud_fraction(stats: "pd.DataFrame",
     cmap_h       = plt.cm.get_cmap("tab10", len(unique_hours))
     hour_colors  = {h: cmap_h(i) for i, h in enumerate(unique_hours)}
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 7), sharex=True,
-                                    gridspec_kw={"hspace": 0.08})
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 5),
+                                    gridspec_kw={"width_ratios": [3, 1]})
     fig.patch.set_facecolor("white")
     fig.suptitle(
         f"Cloud fraction — {radius_km:.0f} km radius around Dome C",
         fontsize=12, fontweight=TITLE_WEIGHT, color=TITLE_COLOR,
     )
 
-    # ── Panneau 1 : n_total (gris) + n_pos (coloré) ──────────
+    # ── Panneau 1 : n_total (gris) + n_pos (coloré) vs temps ──
+    import calendar
+    t_start  = s["hour_bin"].iloc[0]
+    t_end    = s["hour_bin"].iloc[-1]
+    last_day = calendar.monthrange(t_end.year, t_end.month)[1]
+
     ax1.scatter(s["hour_bin"], s["n_total"], s=18, color="lightgrey",
                 linewidths=0, label="n total", zorder=2)
     for _, row in s.iterrows():
@@ -1257,6 +1580,9 @@ def plot_cloud_fraction(stats: "pd.DataFrame",
         ax1.scatter(row["hour_bin"], row["n_pos"], s=18, color=c,
                     linewidths=0, zorder=3)
     ax1.set_ylabel("Number of footprints", fontsize=10)
+    ax1.set_xlabel("Date (UTC)", fontsize=10)
+    ax1.set_xlim(t_start.replace(day=1), t_end.replace(day=last_day))
+
     handles = ([plt.Line2D([0], [0], marker="o", color="w",
                             markerfacecolor="lightgrey", markersize=7,
                             label="n total")] +
@@ -1267,33 +1593,22 @@ def plot_cloud_fraction(stats: "pd.DataFrame",
     ax1.legend(handles=handles, title="Overpass hour",
                fontsize=7, title_fontsize=7, loc="upper right", ncol=2)
 
-    # ── Panneau 2 : fraction nuageuse ─────────────────────────
-    for _, row in s.iterrows():
-        c = hour_colors[row["hour_bin"].hour]
-        ax2.scatter(row["hour_bin"], row["fraction"], s=25, color=c,
-                    linewidths=0, zorder=3)
-    ax2.axhline(s["fraction"].mean(), color="black", linewidth=0.8,
-                linestyle="--", label=f"mean = {s['fraction'].mean():.1f}%")
-    ax2.set_ylabel("Cloud fraction (%)", fontsize=10)
-    ax2.set_xlabel("Date (UTC)", fontsize=10)
-    ax2.set_ylim(0, 105)
-    ax2.legend(fontsize=8, loc="upper right")
-
-    import calendar
-    t_start  = s["hour_bin"].iloc[0]
-    t_end    = s["hour_bin"].iloc[-1]
-    last_day = calendar.monthrange(t_end.year, t_end.month)[1]
-    x_min    = t_start.replace(day=1)
-    x_max    = t_end.replace(day=last_day)
-
     n_days     = (t_end - t_start).days + 1
     interval_d = max(1, n_days // 20)
-    for ax in (ax1, ax2):
-        ax.set_xlim(x_min, x_max)
-        ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d"))
-        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
-        ax.tick_params(axis="x", which="minor", length=3, color="grey")
+    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=interval_d))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%d"))
+    ax1.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+    ax1.tick_params(axis="x", which="minor", length=3, color="grey")
+
+    # ── Panneau 2 : histogramme de la fraction nuageuse ────────
+    frac = s["fraction"].dropna()
+    ax2.hist(frac, bins=10, range=(0, 100), color="#1f77b4",
+             edgecolor="white", alpha=0.85, orientation="vertical")
+    ax2.axvline(frac.mean(), color="black", linewidth=1, linestyle="--",
+                label=f"mean = {frac.mean():.1f}%")
+    ax2.set_xlabel("Cloud fraction (%)", fontsize=10)
+    ax2.set_ylabel("Number of bins", fontsize=10)
+    ax2.legend(fontsize=8)
 
     plt.tight_layout()
     plt.show()
